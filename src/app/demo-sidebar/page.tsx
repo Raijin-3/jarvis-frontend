@@ -3,6 +3,9 @@ import { MobileSidebar } from "@/app/dashboard/mobile-sidebar"
 import { UserNav } from "@/components/nav/user-nav"
 import { BookOpen, Trophy, Target, TrendingUp, Star, Calendar, Brain, Sparkles, Award, Zap, Clock, ChevronRight, Play, Users, BarChart3, Flame, User, Bell } from "lucide-react"
 
+// Force dynamic rendering to prevent prerendering issues
+export const dynamic = 'force-dynamic'
+
 export default function SidebarDemoPage() {
   // Demo user data
   const demoUser = {
