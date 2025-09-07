@@ -3,16 +3,28 @@ import { apiGet } from "@/lib/api"
 import { UnifiedHeader } from "./unified-header"
 
 export async function HeaderProvider() {
-  const sb = supabaseServer()
-  const { data: { user } } = await sb.auth.getUser()
-
+  let user = null
   let userProfile = null
-  if (user) {
-    try {
-      userProfile = await apiGet<any>("/v1/profile")
-    } catch {
-      // Profile fetch failed, continue without profile data
+
+  try {
+    // Check if we have required environment variables
+    if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+      const sb = supabaseServer()
+      const { data: { user: supabaseUser } } = await sb.auth.getUser()
+      user = supabaseUser
+
+      if (user) {
+        try {
+          userProfile = await apiGet<any>("/v1/profile")
+        } catch {
+          // Profile fetch failed, continue without profile data
+        }
+      }
     }
+  } catch (error) {
+    console.error("Error in HeaderProvider:", error)
+    // During static generation or when Supabase is unavailable, 
+    // continue with null user
   }
 
   return <UnifiedHeader user={user} userProfile={userProfile} />
