@@ -16,20 +16,13 @@ import {
   Clock, 
   CheckCircle, 
   AlertCircle, 
-  Settings,
   MoreVertical,
   Edit,
   Trash2,
   Eye,
-  Star,
-  TrendingUp,
   PlayCircle,
   FileText,
-  Award,
-  Calendar,
-  Target,
   Layers,
-  Zap,
   ChevronDown,
   ChevronRight,
   BookMarked,
@@ -105,12 +98,12 @@ type CourseFull = Course & { subjects: Subject[] };
 /* =========================
    Utilities
    ========================= */
-function unwrapData<T = any>(json: any): T {
-  return (json && (json.data ?? json)) as T;
+function unwrapData<T = unknown>(json: unknown): T {
+  return (json && ((json as Record<string, unknown>).data ?? json)) as T;
 }
 
-function normalizeCourseFull(input: any): CourseFull {
-  const c = unwrapData<CourseFull>(input) as any;
+function normalizeCourseFull(input: unknown): CourseFull {
+  const c = unwrapData<CourseFull>(input) as Record<string, unknown>;
   return {
     id: c.id,
     title: c.title ?? "",
@@ -177,7 +170,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
           const res = await fetch('/api/admin/courses', { cache: 'no-store' });
           const json = await res.json().catch(() => ([]));
           if (res.ok) {
-            const list = Array.isArray(json) ? json : unwrapData<any[]>(json);
+            const list = Array.isArray(json) ? json : unwrapData<Course[]>(json);
             setCourses(list);
           }
         } catch {}
@@ -223,8 +216,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
       setCourses((prev) => [created, ...prev]);
       setShowCreateForm(false);
       toast.success("Course created successfully");
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to create course");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to create course");
     }
   };
 
@@ -244,8 +237,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
       setFull((prev) => ({ ...prev, [courseId]: { ...prev[courseId], ...updated } }));
       setShowEditCourseModal(false);
       toast.success("Course updated successfully");
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to update course");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to update course");
     }
   };
 
@@ -270,8 +263,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
         setSelectedCourse(null);
       }
       toast.success("Course deleted successfully");
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to delete course");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete course");
     }
   };
 
@@ -321,8 +314,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
       const courseData = normalizeCourseFull(json);
       setFull((f) => ({ ...f, [id]: courseData }));
       return courseData;
-    } catch (e: any) {
-      toast.error(e?.message || "Failed to load course");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to load course");
       // Fallback to mock data
       const mockCourse: CourseFull = {
         ...courses.find(c => c.id === id)!,
@@ -608,8 +601,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
               
               setShowSubjectModal(false);
               toast.success("Subject added successfully");
-            } catch (e: any) {
-              toast.error(e?.message || "Failed to add subject");
+            } catch (e: unknown) {
+              toast.error(e instanceof Error ? e.message : "Failed to add subject");
             }
           }}
         />
@@ -639,8 +632,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
               
               setShowModuleModal(false);
               toast.success("Module added successfully");
-            } catch (e: any) {
-              toast.error(e?.message || "Failed to add module");
+            } catch (e: unknown) {
+              toast.error(e instanceof Error ? e.message : "Failed to add module");
             }
           }}
         />
@@ -691,8 +684,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     body: JSON.stringify({
                       title: data.lecture.title,
                       content: data.lecture.content,
-                      duration: (data.lecture as any).duration,
-                      type: (data.lecture as any).type,
+                      duration: (data.lecture as { duration?: number }).duration,
+                      type: (data.lecture as { type?: string }).type,
                     }),
                   });
                   
@@ -713,8 +706,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({
                         title: p.title,
-                        content: (p as any).content,
-                        difficulty: (p as any).difficulty,
+                        content: (p as { content?: string }).content,
+                        difficulty: (p as { difficulty?: string }).difficulty,
                       }),
                     });
 
@@ -736,7 +729,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     const qUp = await fetch(`/api/admin/quizzes/${editingSection.quiz.id}`, {
                       method: "PUT",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ title: (data.quiz as any).title }),
+                      body: JSON.stringify({ title: (data.quiz as { title: string }).title }),
                     });
                     if (!qUp.ok) console.warn("Failed to update quiz title");
                     quizId = editingSection.quiz.id;
@@ -744,37 +737,37 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     const quizRes = await fetch(`/api/admin/sections/${targetSectionId}/quiz`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ title: (data.quiz as any).title }),
+                      body: JSON.stringify({ title: (data.quiz as { title: string }).title }),
                     });
                     if (quizRes.ok) {
                       const quizJson = await quizRes.json().catch(() => ({}));
-                      const createdQuiz: any = unwrapData(quizJson);
-                      quizId = createdQuiz?.id || createdQuiz?.quiz?.id || null;
+                      const createdQuiz: Record<string, unknown> = unwrapData(quizJson);
+                      quizId = (createdQuiz?.id as string) || ((createdQuiz?.quiz as Record<string, unknown>)?.id as string) || null;
                     } else {
                       console.warn("Failed to add quiz to section");
                     }
                   }
 
                   // Create/update questions and options if provided
-                  const questions = (data.quiz as any)?.questions as any[] | undefined;
+                  const questions = (data.quiz as { questions?: unknown[] })?.questions;
                   if (quizId && Array.isArray(questions) && questions.length > 0) {
                     for (const q of questions) {
                       try {
-                        let questionId: string | null = q.id || null;
+                        let questionId: string | null = (q as Record<string, unknown>).id as string || null;
                         if (questionId) {
                           // Update existing question
                           const qUp = await fetch(`/api/admin/quizzes/questions/${questionId}`, {
                             method: "PUT",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                              text: q.text,
-                              type: q.type,
-                              order_index: q.order_index,
-                              hint: q.hint,
-                              explanation: q.explanation,
-                              content: q.content,
-                              language: q.language,
-                              correctAnswers: q.correctAnswers,
+                              text: (q as Record<string, unknown>).text,
+                              type: (q as Record<string, unknown>).type,
+                              order_index: (q as Record<string, unknown>).order_index,
+                              hint: (q as Record<string, unknown>).hint,
+                              explanation: (q as Record<string, unknown>).explanation,
+                              content: (q as Record<string, unknown>).content,
+                              language: (q as Record<string, unknown>).language,
+                              correctAnswers: (q as Record<string, unknown>).correctAnswers,
                             }),
                           });
                           if (!qUp.ok) console.warn("Failed to update quiz question");
@@ -784,14 +777,14 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                              text: q.text,
-                              type: q.type,
-                              order_index: q.order_index,
-                              hint: q.hint,
-                              explanation: q.explanation,
-                              content: q.content,
-                              language: q.language,
-                              correctAnswers: q.correctAnswers,
+                              text: (q as Record<string, unknown>).text,
+                              type: (q as Record<string, unknown>).type,
+                              order_index: (q as Record<string, unknown>).order_index,
+                              hint: (q as Record<string, unknown>).hint,
+                              explanation: (q as Record<string, unknown>).explanation,
+                              content: (q as Record<string, unknown>).content,
+                              language: (q as Record<string, unknown>).language,
+                              correctAnswers: (q as Record<string, unknown>).correctAnswers,
                             }),
                           });
                           if (!qRes.ok) {
@@ -799,13 +792,13 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                             continue;
                           }
                           const qJson = await qRes.json().catch(() => ({}));
-                          const createdQuestion: any = unwrapData(qJson);
-                          questionId = createdQuestion?.id || createdQuestion?.question?.id || null;
+                          const createdQuestion: Record<string, unknown> = unwrapData(qJson);
+                          questionId = (createdQuestion?.id as string) || ((createdQuestion?.question as Record<string, unknown>)?.id as string) || null;
                         }
 
                         // Handle MCQ options
-                        if (q.type === 'mcq' && questionId && Array.isArray(q.options)) {
-                          for (const opt of q.options) {
+                        if ((q as Record<string, unknown>).type === 'mcq' && questionId && Array.isArray((q as Record<string, unknown>).options)) {
+                          for (const opt of (q as Record<string, unknown>).options as Record<string, unknown>[]) {
                             try {
                               if (opt.id) {
                                 const oUp = await fetch(`/api/admin/quizzes/options/${opt.id}`, {
@@ -843,8 +836,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
               setShowSectionModal(false);
               setEditingSection(null);
               toast.success(editingSection ? "Section updated successfully" : "Section added successfully");
-            } catch (e: any) {
-              toast.error(e?.message || "Failed to save section");
+            } catch (e: unknown) {
+              toast.error(e instanceof Error ? e.message : "Failed to save section");
             }
           }}
         />
@@ -1189,7 +1182,7 @@ function EnhancedCourseDetailsPanel({
           
           {course.subjects.length === 0 && (
             <div className="text-center py-8 text-gray-500">
-              No subjects added yet. Click "Add Subject" to get started.
+              No subjects added yet. Click &quot;Add Subject&quot; to get started.
             </div>
           )}
         </div>
@@ -1284,7 +1277,7 @@ function CourseModal({
                 <select
                   id="difficulty"
                   value={formData.difficulty}
-                  onChange={(e) => setFormData(prev => ({ ...prev, difficulty: e.target.value as any }))}
+                  onChange={(e) => setFormData(prev => ({ ...prev, difficulty: e.target.value as "beginner" | "intermediate" | "advanced" }))}
                   className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
                 >
                   <option value="beginner">Beginner</option>
@@ -1389,7 +1382,7 @@ function SubjectModal({
               <select
                 id="subject-status"
                 value={formData.status}
-                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as any }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as "draft" | "published" | "archived" }))}
                 className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
               >
                 <option value="draft">Draft</option>
@@ -1493,7 +1486,7 @@ function ModuleModal({
               <select
                 id="module-status"
                 value={formData.status}
-                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as any }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as "draft" | "published" | "archived" }))}
                 className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
               >
                 <option value="draft">Draft</option>
@@ -1571,16 +1564,16 @@ function SectionModal({
   // Prefill quiz builder with existing quiz questions/options on edit
   useEffect(() => {
     if (section?.quiz && Array.isArray(section.quiz.questions) && section.quiz.questions.length > 0) {
-      const items: QuizQuestionForm[] = (section.quiz.questions as any[]).map((q: any) => ({
-        id: q.id,
-        type: (q.type as any) || 'mcq',
-        text: q.text || '',
-        hint: q.hint || '',
-        explanation: q.explanation || '',
-        options: Array.isArray(q.options) ? q.options.map((o: any) => ({ id: o.id, text: o.text || '', correct: !!o.correct })) : [],
-        correctAnswers: Array.isArray(q.correctAnswers) ? q.correctAnswers : [],
-        language: (q as any).language,
-        codeTemplate: q.content || '',
+      const items: QuizQuestionForm[] = (section.quiz.questions as Record<string, unknown>[]).map((q: Record<string, unknown>) => ({
+        id: q.id as string,
+        type: (q.type as string) || 'mcq',
+        text: (q.text as string) || '',
+        hint: (q.hint as string) || '',
+        explanation: (q.explanation as string) || '',
+        options: Array.isArray(q.options) ? (q.options as Record<string, unknown>[]).map((o: Record<string, unknown>) => ({ id: o.id as string, text: (o.text as string) || '', correct: !!o.correct })) : [],
+        correctAnswers: Array.isArray(q.correctAnswers) ? q.correctAnswers as string[] : [],
+        language: q.language as string,
+        codeTemplate: (q.content as string) || '',
       }));
       setFormData(prev => ({
         ...prev,
@@ -1625,7 +1618,7 @@ function SectionModal({
           language: q.language,
           correctAnswers: q.correctAnswers,
           options: q.type === 'mcq' ? q.options : undefined,
-        })) as any,
+        }))
       } : null
     };
     
@@ -1667,7 +1660,7 @@ function SectionModal({
               <select
                 id="section-status"
                 value={formData.status}
-                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as any }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as "draft" | "published" | "archived" }))}
                 className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
               >
                 <option value="draft">Draft</option>
@@ -1836,7 +1829,7 @@ function SectionModal({
 
                     {formData.quizItems.length === 0 && (
                       <div className="text-sm text-gray-600 bg-gray-50 rounded-xl p-3">
-                        No questions yet. Click "Add Question" to start building.
+                        No questions yet. Click &quot;Add Question&quot; to start building.
                       </div>
                     )}
 
@@ -1852,7 +1845,7 @@ function SectionModal({
                                   const quizItems = [...prev.quizItems];
                                   quizItems[qi] = {
                                     ...q,
-                                    type: e.target.value as any,
+                                    type: e.target.value as "mcq" | "text" | "fill-in-the-blanks" | "coding",
                                   };
                                   return { ...prev, quizItems };
                                 })}
