@@ -19,6 +19,7 @@ type Profile = {
   sports_arts: string | null;
   languages: string | null;
   motivations: string | null;
+  role?: string | null;
   education?: string | null;
   graduation_year?: number | null;
   domain?: string | null;
@@ -35,7 +36,23 @@ export default async function ProfilePage() {
   let initial: Partial<Profile> | null = null;
   try {
     initial = await apiGet<Profile>("/v1/profile");
-  } catch {}
+    console.log(initial);
+  } catch {
+    // Fallback: try the Next API route which proxies to the backend
+    try {
+      const res = await fetch(`/api/profile`, { cache: 'no-store' });
+      console.log(res);
+      if (res.ok) {
+        initial = await res.json().catch(() => null);
+      }
+    } catch {}
+  }
+
+  // If user is an admin, route them to the admin dashboard instead of profile setup
+  const role = String((initial as any)?.role || '').toLowerCase();
+  if (role === 'admin') redirect('/admin');
+
+  console.log(initial);
 
   return (
     <div className="mx-auto max-w-3xl p-4 md:p-6">

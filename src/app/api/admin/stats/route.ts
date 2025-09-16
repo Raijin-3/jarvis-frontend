@@ -1,0 +1,43 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { supabaseServer } from '@/lib/supabase-server'
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+
+async function getAuthHeaders() {
+  const supabase = supabaseServer()
+  const { data: { session }, error } = await supabase.auth.getSession()
+  
+  if (error || !session?.access_token) {
+    throw new Error('Not authenticated')
+  }
+
+  return {
+    'Authorization': `Bearer ${session.access_token}`,
+    'Content-Type': 'application/json',
+  }
+}
+
+// GET /api/admin/stats - Get user statistics
+export async function GET(request: NextRequest) {
+  try {
+    const headers = await getAuthHeaders()
+
+    const response = await fetch(`${API_BASE_URL}/v1/admin/stats`, {
+      headers,
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      return NextResponse.json({ error }, { status: response.status })
+    }
+
+    const data = await response.json()
+    return NextResponse.json(data)
+  } catch (error) {
+    console.error('Admin stats API error:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch statistics' }, 
+      { status: 500 }
+    )
+  }
+}

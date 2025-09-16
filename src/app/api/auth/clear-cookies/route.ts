@@ -1,34 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
 
+// Clears Supabase auth-related cookies (sb-*). Useful for debugging.
 export async function POST(request: NextRequest) {
   const cleared: string[] = [];
   const response = NextResponse.json({ ok: true, cleared });
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
-  try {
-    await supabase.auth.signOut();
-  } catch (e) {
-    // ignore
-  }
-
-  // Proactively delete any remaining Supabase cookies (sb-*)
   try {
     const all = request.cookies.getAll();
     for (const c of all) {
@@ -37,6 +13,7 @@ export async function POST(request: NextRequest) {
         cleared.push(c.name);
       }
     }
+    // Also clear common generic names if present
     for (const name of ["sb-access-token", "sb-refresh-token"]) {
       if (request.cookies.get(name)) {
         response.cookies.delete(name);
@@ -47,3 +24,4 @@ export async function POST(request: NextRequest) {
 
   return response;
 }
+

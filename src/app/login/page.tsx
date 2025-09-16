@@ -16,11 +16,24 @@ export default async function LoginPage() {
   if (user) {
     try {
       const p = await apiGet<any>("/v1/profile")
-      const completed = Boolean(p?.onboarding_completed)
-      if (!completed) redirect("/profile")
       const role = String(p?.role || '').toLowerCase()
+      
+      // Admin goes directly to admin page
       if (role === 'admin') redirect('/admin')
+      
+      // Teacher goes to teacher page
       if (role === 'teacher') redirect('/teacher')
+      
+      // Student flow: profile -> assessment -> learning path -> dashboard
+      const onboardingCompleted = Boolean(p?.onboarding_completed)
+      const assessmentCompleted = Boolean(p?.assessment_completed_at)
+      const learningPathSet = Boolean(p?.learning_path_preference)
+      
+      if (!onboardingCompleted) redirect("/profile")
+      if (!assessmentCompleted) redirect("/assessment") 
+      if (!learningPathSet) redirect("/learning-path")
+      
+      // All completed - go to dashboard
       redirect("/dashboard")
     } catch {
       // If profile fetch fails, send to dashboard; dashboard will guard and redirect if needed
@@ -144,17 +157,6 @@ export default async function LoginPage() {
         <section className="order-1 lg:order-2 flex items-center justify-center">
           <div className="w-full max-w-md">
             <LoginForm />
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                New to Jarvis?{' '}
-                <a 
-                  href="/signup" 
-                  className="font-semibold text-indigo-600 hover:text-indigo-500 transition-colors duration-200 underline decoration-2 underline-offset-4 hover:decoration-indigo-300"
-                >
-                  Create your account
-                </a>
-              </p>
-            </div>
           </div>
         </section>
       </div>

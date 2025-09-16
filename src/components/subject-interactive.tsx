@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { VideoPlayer } from "@/components/video-player";
-import { ProgressMini } from "@/components/gamification";
+import { ProgressMini } from "@/components/gamification-simple";
 import { CourseTabs } from "@/components/course-tabs";
 
 type Section = { id: string; title: string; overview?: string; lecture?: { content?: string } | null };

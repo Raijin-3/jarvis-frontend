@@ -4,7 +4,7 @@ import { supabaseServer } from "@/lib/supabase-server";
 import { Sidebar } from "../../../../../dashboard/sidebar";
 import { MobileSidebar } from "../../../../../dashboard/mobile-sidebar";
 import { VideoPlayer } from "@/components/video-player";
-import { ProgressMini } from "@/components/gamification";
+import { ProgressMini } from "@/components/gamification-simple";
 import Link from "next/link";
 
 type Track = any;

@@ -80,9 +80,8 @@ export function AuthForm() {
       </p>
 
       <Tabs defaultValue="login" className="w-full">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList className="grid w-full grid-cols-1">
           <TabsTrigger value="login">Sign in</TabsTrigger>
-          <TabsTrigger value="signup">Create account</TabsTrigger>
         </TabsList>
 
         {/* Sign in */}

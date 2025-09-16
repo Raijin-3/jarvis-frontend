@@ -223,15 +223,6 @@ export function UnifiedHeader({ user, userProfile }: Props) {
                             Sign in
                           </Button>
                         </Link>
-                        <Link 
-                          href="/signup"
-                          onClick={() => setIsOpen(false)}
-                          className="block w-full"
-                        >
-                          <Button className="w-full justify-center rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700">
-                            Get Started
-                          </Button>
-                        </Link>
                       </div>
                     )}
                   </div>
@@ -417,11 +408,7 @@ function PublicNav() {
             Sign in
           </Button>
         </Link>
-        <Link href="/signup">
-          <Button className="rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl transition-all">
-            Get Started
-          </Button>
-        </Link>
+        {/* Signup removed */}
       </div>
     </>
   )

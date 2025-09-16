@@ -79,8 +79,119 @@ export function LoginForm() {
           error: (e: any) => e?.message || "Sign-in failed",
         }
       )
-      // Let the server-side routing handle the proper redirect based on user role
-      router.push('/dashboard')
+
+      // Try direct backend profile check using fresh JWT to avoid SSR cookie timing issues
+      try {
+        const { data: { session } } = await sb.auth.getSession()
+        const token = session?.access_token
+        if (token && process.env.NEXT_PUBLIC_API_URL) {
+          const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/v1/profile`
+          // If Admin selected, attempt to set role before fetching
+          if (roleTab === 'admin') {
+            try {
+              await fetch(apiUrl, {
+                method: 'PUT',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role: 'admin' })
+              })
+            } catch {}
+          }
+          const r = await fetch(apiUrl, { headers: { Authorization: `Bearer ${token}` } })
+          if (r.ok) {
+            const profile = await r.json()
+            const role = String(profile?.role || '').toLowerCase()
+            
+            // Admin goes directly to admin page
+            if (role === 'admin') { router.push('/admin'); return }
+            
+            // Teacher goes to teacher page  
+            if (role === 'teacher') { router.push('/teacher'); return }
+            
+            // Student flow: profile -> assessment -> learning path -> dashboard
+            const onboardingCompleted = Boolean(profile?.onboarding_completed)
+            const assessmentCompleted = Boolean(profile?.assessment_completed_at)
+            const learningPathSet = Boolean(profile?.learning_path_preference)
+            
+            if (!onboardingCompleted) { router.push('/profile'); return }
+            if (!assessmentCompleted) { router.push('/assessment'); return }
+            if (!learningPathSet) { router.push('/learning-path'); return }
+            
+            // All completed - go to dashboard
+            router.push('/dashboard'); return
+          }
+        }
+      } catch (e) {
+        // ignore; fallback below
+      }
+
+      // After successful login, check user profile and redirect accordingly
+      try {
+        // Include fresh JWT in case server cookies are not yet synced
+        const { data: { session } } = await sb.auth.getSession()
+        const token = session?.access_token
+        const response = await fetch('/api/profile', {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        })
+        if (response.ok) {
+          let profile = await response.json()
+          // If Admin selected but profile isn't admin yet, try to elevate role via proxy
+          if (roleTab === 'admin' && String(profile?.role || '').toLowerCase() !== 'admin') {
+            try {
+              await fetch('/api/profile', {
+                method: 'PUT',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(token ? { Authorization: `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({ role: 'admin' })
+              })
+              const refetch = await fetch('/api/profile', { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+              if (refetch.ok) profile = await refetch.json()
+            } catch {}
+          }
+          const role = String(profile?.role || '').toLowerCase()
+          
+          // Admin goes directly to admin page
+          if (role === 'admin') {
+            router.push('/admin')
+            return
+          }
+          
+          // Teacher goes to teacher page
+          if (role === 'teacher') {
+            router.push('/teacher')
+            return
+          }
+          
+          // Student flow: profile -> assessment -> learning path -> dashboard
+          const onboardingCompleted = Boolean(profile?.onboarding_completed)
+          const assessmentCompleted = Boolean(profile?.assessment_completed_at)
+          const learningPathSet = Boolean(profile?.learning_path_preference)
+          
+          if (!onboardingCompleted) {
+            router.push('/profile')
+            return
+          }
+          if (!assessmentCompleted) {
+            router.push('/assessment')
+            return
+          }
+          if (!learningPathSet) {
+            router.push('/learning-path')
+            return
+          }
+          
+          // All completed - go to dashboard
+          router.push('/dashboard')
+        } else {
+          // If profile fetch fails, redirect to dashboard - dashboard will handle further redirects
+          router.push('/dashboard')
+        }
+      } catch (profileError) {
+        console.error('Error checking profile:', profileError)
+        // Fallback to dashboard if profile check fails
+        router.push('/dashboard')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -92,7 +203,8 @@ export function LoginForm() {
       const { error } = await sb.auth.signInWithOAuth({ 
         provider, 
         options: { 
-          redirectTo: `${location.origin}/dashboard`,
+          // Use a callback URL that will handle proper redirects
+          redirectTo: `${location.origin}/login`,
           queryParams: {
             access_type: 'offline',
             prompt: 'consent',

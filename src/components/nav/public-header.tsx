@@ -8,10 +8,8 @@ export function PublicHeader() {
         </a>
         <nav className="flex items-center gap-2">
           <a href="/login" className="rounded-md border border-border bg-white/70 px-3 py-1.5 text-sm hover:bg-black/5">Sign in</a>
-          <a href="/signup" className="rounded-md border border-border bg-[hsl(var(--brand))]/10 px-3 py-1.5 text-sm text-[hsl(var(--brand))] hover:bg-[hsl(var(--brand))]/15">Create account</a>
         </nav>
       </div>
     </header>
   )
 }
-

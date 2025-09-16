@@ -18,17 +18,15 @@ import {
 export const metadata = { title: "Admin Dashboard | Jarvis" }
 
 export default async function AdminPage() {
-  // Temporarily disabled for testing - auth credentials need to be verified separately
-  // const sb = supabaseServer()
-  // const { data: { user } } = await sb.auth.getUser()
-  // if (!user) redirect("/login")
-
-  // // Ensure onboarding complete
-  // const profile = await apiGet<any>("/v1/profile").catch(() => null)
-  // if (!profile?.onboarding_completed) redirect("/profile")
-  // if ((profile?.role ?? "").toLowerCase() !== "admin") redirect("/dashboard")
-
   const sb = supabaseServer()
+  const { data: { user } } = await sb.auth.getUser()
+  if (!user) redirect("/login")
+
+  // Get profile and ensure admin role
+  const profile = await apiGet<any>("/v1/profile").catch(() => null)
+  if ((profile?.role ?? "").toLowerCase() !== "admin") redirect("/dashboard")
+  
+  // Note: Skip onboarding check for admin users - they have access to admin panel regardless
 
   const data = await apiGet<any>("/v1/dashboard").catch(() => ({ 
     panels: ["Org Health", "User Growth", "System Metrics"], 

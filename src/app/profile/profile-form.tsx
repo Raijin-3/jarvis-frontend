@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "@/lib/toast";
+import { supabaseBrowser } from "@/lib/supabase-browser";
 import { useRouter } from "next/navigation";
 import { TextareaHTMLAttributes } from "react";
 import { 
@@ -65,7 +66,7 @@ const schema = z.object({
   motivations: z.string().optional().or(z.literal("")),
   // New fields for enhanced onboarding
   learning_style: z.string().optional().or(z.literal("")),
-  career_goals: z.string().optional().or(z.literal("")),
+  career_goal: z.string().optional().or(z.literal("")),
   experience_level: z.string().optional().or(z.literal("")),
   preferred_pace: z.string().optional().or(z.literal("")),
   time_commitment: z.string().optional().or(z.literal("")),
@@ -208,7 +209,7 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
       languages: initial.languages ?? "",
       motivations: initial.motivations ?? "",
       learning_style: (initial as any).learning_style ?? "",
-      career_goals: (initial as any).career_goals ?? "",
+      career_goal: (initial as any).career_goal ?? "",
       experience_level: (initial as any).experience_level ?? "",
       preferred_pace: (initial as any).preferred_pace ?? "",
       time_commitment: (initial as any).time_commitment ?? "",
@@ -306,10 +307,17 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
       if (body[k] === "" || Number.isNaN(body[k])) body[k] = null;
     });
     
+    const sb = supabaseBrowser();
+    const { data: { session } } = await sb.auth.getSession();
+    const token = session?.access_token;
+
     await toast.promise(
       fetch("/api/profile", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(body),
       }).then(async (r) => {
         const text = await r.text();
@@ -320,16 +328,8 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
       success: "Welcome to Jarvis!",
       error: (e) => (e as Error).message || "Failed to save",
     });
-    // Mark that we should redirect to assessment on the next login only
-    try {
-      if (typeof document !== 'undefined') {
-        document.cookie = "first_assessment_redirect=1; path=/; max-age=2592000"; // 30 days
-      }
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('justCompletedProfile', '1');
-      }
-    } catch {}
-    router.replace("/dashboard");
+    // Redirect to assessment after profile completion
+    router.replace("/assessment");
   };
 
   const stepProgress = ((currentStep + 1) / steps.length) * 100;
@@ -667,13 +667,13 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
               </div>
 
               <div>
-                <Label htmlFor="career_goals" className="text-base font-medium">What are your career goals?</Label>
+                <Label htmlFor="career_goal" className="text-base font-medium">What are your career goals?</Label>
                 <Textarea 
-                  id="career_goals" 
+                  id="career_goal" 
                   placeholder="Become a data analyst, start my own consultancy, transition to tech..." 
                   className="mt-2"
                   rows={3}
-                  {...form.register("career_goals")} 
+                  {...form.register("career_goal")} 
                 />
               </div>
 
@@ -815,5 +815,4 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
     </div>
   );
 }
-
 

@@ -61,6 +61,7 @@ Thumbs.db
 *.temp
 .temp/
 
+
 # Logs
 server.log
 *.log
@@ -75,3 +76,28 @@ pnpm-lock.yaml
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+
+
+# Testing
+admin-login-result.png
+playwright-report/
+playwright.config.ts
+test-results.xml
+.playwright-test-reporter-config.json
+.nyc_output/
+coverage/
+jest.config.js
+jest.setup.js
+jest.test-results.json
+jest.watchman-cache/
+lerna-debug.log
+node_modules/
+test-results/
+tests/
+*.log
+*.tmp
+*.temp
+*.pid
+*.seed
+*.pid.lock
+scripts/test-auth.mjs

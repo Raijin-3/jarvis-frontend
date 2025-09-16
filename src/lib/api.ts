@@ -2,7 +2,9 @@
 import "server-only";
 import { supabaseServer } from "@/lib/supabase-server";
 
-const API_URL = process.env.API_URL!;
+// Prefer server-only API_URL, but fall back to NEXT_PUBLIC_API_URL to reduce misconfig friction.
+// Default to local Nest API in dev if not provided
+const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
 export async function apiGet<T>(path: string): Promise<T> {
   const sb = supabaseServer();

@@ -5,6 +5,7 @@ import { supabaseServer } from "@/lib/supabase-server"
 import { Sidebar } from "./sidebar"
 import { MobileSidebar } from "./mobile-sidebar"
 import { BookOpen, Trophy, Target, TrendingUp, Star, Calendar, Brain, Sparkles, Award, Zap, Clock, ChevronRight, Play, Users, BarChart3, Flame } from "lucide-react"
+import { GamificationProvider, GamificationStrip } from "@/components/gamification"
 
 type DashboardData = {
   role?: string
@@ -143,6 +144,12 @@ export default async function DashboardPage() {
         <Sidebar active="/dashboard" user={sidebarUser} />
 
         <section className="flex-1">
+          {/* Dynamic Gamification Strip (live stats) */}
+          <GamificationProvider userId={user.id}>
+            <div className="mb-6">
+              <GamificationStrip />
+            </div>
+          </GamificationProvider>
           {/* Enhanced Hero Section */}
           <div className="relative overflow-hidden rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-8 backdrop-blur-xl shadow-xl mb-8">
             <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 to-emerald-500/5"></div>

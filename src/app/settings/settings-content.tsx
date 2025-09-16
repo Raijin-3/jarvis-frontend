@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -49,6 +49,24 @@ export function SettingsContent({ user }: { user: User }) {
     fullName: user.user_metadata?.full_name || "",
     email: user.email || ""
   })
+
+  // Populate profile details from database if available
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/profile', { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        if (!data) return
+        const full = (data.full_name || '').trim()
+        if (!cancelled && full) {
+          setProfile(prev => ({ ...prev, fullName: full }))
+        }
+      } catch {}
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   const handleLogout = async () => {
     try {
