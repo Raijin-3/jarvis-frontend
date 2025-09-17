@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 // Prefer server-only API_URL, then public override; default to localhost:8080 to avoid nulls in dev
-const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = process.env.API_URL;
 
 async function getSupabaseFromRoute() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

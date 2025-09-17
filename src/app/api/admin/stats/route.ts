@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase-server'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
 
 async function getAuthHeaders() {
   const supabase = supabaseServer()
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
   try {
     const headers = await getAuthHeaders()
 
-    const response = await fetch(`${API_BASE_URL}/v1/admin/stats`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/users/stats`, {
       headers,
     })
 
