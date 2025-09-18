@@ -93,6 +93,48 @@ export async function GET(
               order: 3,
               estimated_duration: "2 weeks",
               completed: false
+            },
+            {
+              id: "advanced-sql",
+              title: "Advanced SQL Techniques",
+              description: "Learn complex queries, joins, and optimization",
+              step_type: "lesson",
+              order_index: 4,
+              estimated_hours: 18,
+              skills: ["Advanced SQL", "Query Optimization", "Complex Joins"],
+              prerequisites: ["sql-basics"],
+              is_required: false,
+              order: 4,
+              estimated_duration: "2 weeks",
+              completed: false
+            },
+            {
+              id: "python-intro",
+              title: "Introduction to Python for Analytics",
+              description: "Basic Python programming for data analysis",
+              step_type: "lesson",
+              order_index: 5,
+              estimated_hours: 30,
+              skills: ["Python", "Pandas", "Data Analysis"],
+              prerequisites: ["data-viz"],
+              is_required: false,
+              order: 5,
+              estimated_duration: "3 weeks",
+              completed: false
+            },
+            {
+              id: "statistics-fundamentals",
+              title: "Statistics for Data Analysis",
+              description: "Essential statistical concepts and methods",
+              step_type: "lesson",
+              order_index: 6,
+              estimated_hours: 22,
+              skills: ["Statistics", "Probability", "Hypothesis Testing"],
+              prerequisites: [],
+              is_required: true,
+              order: 6,
+              estimated_duration: "2 weeks",
+              completed: false
             }
           ]
         }

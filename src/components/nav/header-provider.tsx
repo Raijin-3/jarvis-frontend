@@ -7,18 +7,15 @@ export async function HeaderProvider() {
   let userProfile = null
 
   try {
-    // Check if we have required environment variables
-    if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-      const sb = supabaseServer()
-      const { data: { user: supabaseUser } } = await sb.auth.getUser()
-      user = supabaseUser
+    const sb = supabaseServer()
+    const { data: { user: supabaseUser } } = await sb.auth.getUser()
+    user = supabaseUser
 
-      if (user) {
-        try {
-          userProfile = await apiGet<any>("/v1/profile")
-        } catch {
-          // Profile fetch failed, continue without profile data
-        }
+    if (user) {
+      try {
+        userProfile = await apiGet<any>("/v1/profile")
+      } catch {
+        // Profile fetch failed, continue without profile data
       }
     }
   } catch (error) {

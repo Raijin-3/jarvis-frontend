@@ -46,6 +46,7 @@ export default async function AdminPage() {
   const quickActions = [
     { title: "Course Management", description: "Create and edit courses", icon: BookOpen, href: "/admin/courses", color: "from-blue-500 to-cyan-500" },
     { title: "User Management", description: "Manage learners and instructors", icon: Users, href: "/admin/users", color: "from-purple-500 to-pink-500" },
+    { title: "Assessment Management", description: "Manage questions and assessments", icon: FileText, href: "/admin/assessments", color: "from-indigo-500 to-purple-500" },
     { title: "Analytics", description: "View platform insights", icon: BarChart3, href: "/admin/analytics", color: "from-emerald-500 to-teal-500" },
     { title: "Settings", description: "System configuration", icon: Settings, href: "/admin/settings", color: "from-orange-500 to-red-500" }
   ]
@@ -180,7 +181,7 @@ export default async function AdminPage() {
           {/* Quick Actions */}
           <div className="lg:col-span-2 space-y-6">
             <h2 className="text-xl font-semibold text-gray-900">Quick Actions</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {quickActions.map((action) => (
                 <a 
                   key={action.title}

@@ -328,8 +328,8 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
       success: "Welcome to Jarvis!",
       error: (e) => (e as Error).message || "Failed to save",
     });
-    // Redirect to assessment after profile completion
-    router.replace("/assessment");
+    // Redirect to assessment/start after profile completion for new students
+    router.replace("/assessment/start?first=1");
   };
 
   const stepProgress = ((currentStep + 1) / steps.length) * 100;

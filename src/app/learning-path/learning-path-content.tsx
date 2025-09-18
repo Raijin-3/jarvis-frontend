@@ -260,11 +260,15 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
                 </div>
                 <div className="flex items-center gap-2">
                   <Target className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">Career-focused</span>
+                  <span className="text-sm text-gray-700">
+                    {recommendedPath.steps?.filter(s => s.is_required).length || 0} mandatory
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">Community support</span>
+                  <Star className="h-5 w-5 text-gray-500" />
+                  <span className="text-sm text-gray-700">
+                    {recommendedPath.steps?.filter(s => !s.is_required).length || 0} optional
+                  </span>
                 </div>
               </div>
 
@@ -336,6 +340,138 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
           </div>
         </div>
 
+        {/* Course Structure Overview */}
+        {recommendedPath.steps && recommendedPath.steps.length > 0 && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Course Structure Overview</h2>
+              <p className="text-gray-600">Organized learning path with mandatory and optional modules</p>
+            </div>
+
+            {/* Course -> Subject -> Module Hierarchy */}
+            <div className="bg-white/80 backdrop-blur rounded-xl border border-gray-200 p-6">
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {/* Data Analytics Course */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center text-white text-lg font-bold">
+                      📊
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Data Analytics</h3>
+                      <p className="text-xs text-gray-500">Core Course</p>
+                    </div>
+                  </div>
+                  
+                  <div className="pl-4 space-y-3">
+                    <div className="border-l-2 border-blue-200 pl-4">
+                      <h4 className="font-medium text-gray-800">Fundamentals</h4>
+                      <div className="space-y-2 mt-2">
+                        {recommendedPath.steps.slice(0, 2).map((step) => (
+                          <div key={step.id} className="flex items-center justify-between text-sm">
+                            <span className="text-gray-700">{step.title}</span>
+                            <div className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              step.is_required 
+                                ? 'bg-red-100 text-red-700' 
+                                : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {step.is_required ? 'Mandatory' : 'Optional'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div className="border-l-2 border-purple-200 pl-4">
+                      <h4 className="font-medium text-gray-800">Advanced Topics</h4>
+                      <div className="space-y-2 mt-2">
+                        {recommendedPath.steps.slice(2).map((step) => (
+                          <div key={step.id} className="flex items-center justify-between text-sm">
+                            <span className="text-gray-700">{step.title}</span>
+                            <div className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              step.is_required 
+                                ? 'bg-red-100 text-red-700' 
+                                : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {step.is_required ? 'Mandatory' : 'Optional'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Statistics Course */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 flex items-center justify-center text-white text-lg font-bold">
+                      📈
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Statistics</h3>
+                      <p className="text-xs text-gray-500">Support Course</p>
+                    </div>
+                  </div>
+                  
+                  <div className="pl-4 space-y-3">
+                    <div className="border-l-2 border-emerald-200 pl-4">
+                      <h4 className="font-medium text-gray-800">Descriptive Statistics</h4>
+                      <div className="space-y-2 mt-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700">Basic Statistics</span>
+                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                            Mandatory
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700">Data Distribution</span>
+                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                            Optional
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tools & Technology Course */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 flex items-center justify-center text-white text-lg font-bold">
+                      🛠️
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">Tools & Technology</h3>
+                      <p className="text-xs text-gray-500">Practical Course</p>
+                    </div>
+                  </div>
+                  
+                  <div className="pl-4 space-y-3">
+                    <div className="border-l-2 border-amber-200 pl-4">
+                      <h4 className="font-medium text-gray-800">Essential Tools</h4>
+                      <div className="space-y-2 mt-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700">Excel Mastery</span>
+                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                            Mandatory
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700">Power BI</span>
+                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                            Optional
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Detailed Roadmap */}
         {recommendedPath.steps && recommendedPath.steps.length > 0 && (
           <div className="space-y-6">
@@ -391,6 +527,14 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
                               <h3 className="text-lg font-semibold text-gray-900">{step.title}</h3>
                               <div className={`flex items-center justify-center w-6 h-6 rounded-lg bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')}`}>
                                 {getStepIcon(step.step_type || 'lesson')}
+                              </div>
+                              {/* Mandatory/Optional Badge */}
+                              <div className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                step.is_required 
+                                  ? 'bg-red-100 text-red-700 border border-red-200' 
+                                  : 'bg-blue-100 text-blue-700 border border-blue-200'
+                              }`}>
+                                {step.is_required ? 'MANDATORY' : 'OPTIONAL'}
                               </div>
                             </div>
                             <p className="text-gray-600 text-sm leading-relaxed">{step.description}</p>

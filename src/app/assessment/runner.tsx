@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
 import { useRouter } from "next/navigation";
 
+type BaseQuestion = { id: string; prompt: string; imageUrl: string | null; rawType?: string | null; timeLimit: number | null };
+
 type Question =
-  | { id: string; type: "mcq"; prompt: string; options: string[] }
-  | { id: string; type: "text"; prompt: string };
+  | (BaseQuestion & { type: "mcq"; options: string[] })
+  | (BaseQuestion & { type: "text" });
 
 type StartPayload = { assessment_id: string; questions: Question[] };
 
@@ -46,29 +48,40 @@ export function AssessmentRunner() {
     })();
   }, [router]);
 
+  const current = useMemo(() => data?.questions[idx], [data, idx]);
+  const currentTimeLimit = useMemo(() => {
+    if (!current) return 60;
+    const limit = current.timeLimit ?? 0;
+    return limit > 0 ? limit : 60;
+  }, [current]);
+  const progressPct = useMemo(() => {
+    if (!data) return 0;
+    return Math.round((idx / data.questions.length) * 100);
+  }, [data, idx]);
+  const timeProgressPct = useMemo(() => {
+    if (currentTimeLimit <= 0) return 0;
+    const pct = ((currentTimeLimit - secondsLeft) / currentTimeLimit) * 100;
+    if (Number.isNaN(pct)) return 0;
+    return Math.min(100, Math.max(0, pct));
+  }, [currentTimeLimit, secondsLeft]);
+
   // timer per question
   useEffect(() => {
     if (loading || !data) return;
-    setSecondsLeft(60);
+    setSecondsLeft(currentTimeLimit);
     const t = setInterval(() => {
       setSecondsLeft((s) => {
         if (s <= 1) {
           clearInterval(t);
           handleNext();
-          return 60;
+          return currentTimeLimit;
         }
         return s - 1;
       });
     }, 1000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, loading, data?.assessment_id]);
-
-  const current = useMemo(() => data?.questions[idx], [data, idx]);
-  const progressPct = useMemo(() => {
-    if (!data) return 0;
-    return Math.round((idx / data.questions.length) * 100);
-  }, [data, idx]);
+  }, [idx, loading, data?.assessment_id, currentTimeLimit]);
 
   const setAnswer = (qid: string, val: string | null) => {
     setAnswers((a) => ({ ...a, [qid]: val }));
@@ -128,6 +141,14 @@ export function AssessmentRunner() {
     }
   };
 
+  if (!loading && data && data.questions.length === 0) {
+    return (
+      <div className="mx-auto max-w-xl p-4 md:p-6">
+        <div className="rounded-xl border border-border bg-white/70 p-6 backdrop-blur">No assessment questions are available at the moment. Please check back soon.</div>
+      </div>
+    );
+  }
+
   if (loading || !data || !current) {
     return (
       <div className="mx-auto max-w-xl p-4 md:p-6">
@@ -159,12 +180,22 @@ export function AssessmentRunner() {
 
           {/* Time progress */}
           <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-gradient-to-r from-[hsl(var(--brand))] to-[hsl(var(--brand-accent))]" style={{ width: `${((60 - secondsLeft) / 60) * 100}%` }} />
+            <div className="h-full rounded-full bg-gradient-to-r from-[hsl(var(--brand))] to-[hsl(var(--brand-accent))]" style={{ width: `${timeProgressPct}%` }} />
           </div>
 
           {/* Prompt */}
           <h2 className="text-base font-semibold sm:text-lg">{current.prompt}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Answer within 60 seconds. Skip if unsure — no guessing.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Answer within {currentTimeLimit} seconds. Skip if unsure - no guessing.</p>
+          {current.imageUrl ? (
+            <div className="mt-3 flex justify-center">
+              <img
+                src={current.imageUrl}
+                alt="Question visual"
+                loading="lazy"
+                className="max-h-64 rounded-lg border border-border bg-white object-contain"
+              />
+            </div>
+          ) : null}
 
           {/* Body */}
           <div className="mt-4">

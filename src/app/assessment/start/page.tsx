@@ -7,7 +7,18 @@ import { MobileSidebar } from "../../dashboard/mobile-sidebar";
 
 export const metadata = { title: "Assessment - Jarvis" };
 
-export default async function AssessmentStartPage({ searchParams }: { searchParams?: { [key: string]: string | string[] | undefined } }) {
+
+type StartSearchParams = Record<string, string | string[] | undefined>;
+type SearchParamsInput = StartSearchParams | Promise<StartSearchParams> | undefined;
+
+export default async function AssessmentStartPage({
+  searchParams,
+}: {
+  searchParams?: SearchParamsInput;
+}) {
+  // Next.js 15 delivers searchParams as a Promise; support both sync/async forms.
+  const resolvedSearchParams: StartSearchParams =
+    (searchParams ? await Promise.resolve(searchParams) : undefined) ?? {};
   const sb = supabaseServer();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) redirect("/login");
@@ -15,7 +26,7 @@ export default async function AssessmentStartPage({ searchParams }: { searchPara
   // Determine if we should hide navigation for first-time assessment
   let hideNav = false;
   const firstParam = (() => {
-    const v = searchParams?.first;
+    const v = resolvedSearchParams.first;
     const s = Array.isArray(v) ? v[0] : v;
     return s === "1" || (s ?? "").toLowerCase() === "true";
   })();
