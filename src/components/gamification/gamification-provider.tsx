@@ -86,6 +86,12 @@ interface GamificationContextType {
   markNotificationsRead: (notificationIds: string[]) => Promise<void>;
   awardPoints: (points: number, reason: string, referenceId?: string, referenceType?: string) => Promise<void>;
   refreshChallenges: () => Promise<void>;
+  // Enhanced dynamic features
+  awardMicroReward: (microAchievement: string, contextData?: any) => Promise<void>;
+  getCurrentMultiplier: () => Promise<number>;
+  checkContextualAchievements: (activityData: any) => Promise<string[]>;
+  getDynamicInsights: () => Promise<any>;
+  getPersonalizedRecommendations: () => Promise<any>;
 }
 
 const GamificationContext = createContext<GamificationContextType | undefined>(undefined);
@@ -269,6 +275,76 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     }
   }, [userId, apiCall]);
 
+  // Enhanced dynamic gamification methods
+  const awardMicroReward = useCallback(async (microAchievement: string, contextData?: any) => {
+    if (!userId) return;
+
+    try {
+      await apiCall(`/v1/gamification/micro-reward/${userId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          microAchievement,
+          contextData,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+    } catch (error) {
+      console.error('Error awarding micro reward:', error);
+    }
+  }, [userId, apiCall]);
+
+  const getCurrentMultiplier = useCallback(async (): Promise<number> => {
+    if (!userId) return 1.0;
+
+    try {
+      const data = await apiCall(`/v1/gamification/multiplier/${userId}`);
+      return data.multiplier || 1.0;
+    } catch (error) {
+      console.error('Error getting current multiplier:', error);
+      return 1.0;
+    }
+  }, [userId, apiCall]);
+
+  const checkContextualAchievements = useCallback(async (activityData: any): Promise<string[]> => {
+    if (!userId) return [];
+
+    try {
+      const data = await apiCall(`/v1/gamification/contextual-achievements/${userId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          activityData,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+      return data.newAchievements || [];
+    } catch (error) {
+      console.error('Error checking contextual achievements:', error);
+      return [];
+    }
+  }, [userId, apiCall]);
+
+  const getDynamicInsights = useCallback(async () => {
+    if (!userId) return null;
+
+    try {
+      return await apiCall(`/v1/gamification/dynamic-insights/${userId}`);
+    } catch (error) {
+      console.error('Error getting dynamic insights:', error);
+      return null;
+    }
+  }, [userId, apiCall]);
+
+  const getPersonalizedRecommendations = useCallback(async () => {
+    if (!userId) return null;
+
+    try {
+      return await apiCall(`/v1/gamification/personalized-recommendations/${userId}`);
+    } catch (error) {
+      console.error('Error getting personalized recommendations:', error);
+      return null;
+    }
+  }, [userId, apiCall]);
+
   useEffect(() => {
     if (userId) {
       refreshData();
@@ -342,6 +418,12 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     markNotificationsRead,
     awardPoints,
     refreshChallenges,
+    // Enhanced dynamic features
+    awardMicroReward,
+    getCurrentMultiplier,
+    checkContextualAchievements,
+    getDynamicInsights,
+    getPersonalizedRecommendations,
   };
 
   return (

@@ -217,7 +217,7 @@ Complete the following exercises to reinforce your understanding.`,
 
         {/* Content Display */}
         {isVideoContent ? (
-          <div className="rounded-2xl border border-white/60 bg-black/95 backdrop-blur-xl shadow-lg overflow-hidden">
+          <div className="border border-white/60 bg-black/95 backdrop-blur-xl shadow-lg overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 bg-black/60 text-white">
               <div className="truncate">
                 <div className="text-xs uppercase text-white/70">Now Playing</div>
@@ -245,7 +245,7 @@ Complete the following exercises to reinforce your understanding.`,
               </div>
             </div>
             <div className="relative w-full pt-[56.25%] bg-black">
-              <div className="absolute inset-0">
+              <div className="absolute custom-inset">
                 {contentNode}
               </div>
             </div>

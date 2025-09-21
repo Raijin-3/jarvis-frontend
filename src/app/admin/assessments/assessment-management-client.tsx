@@ -279,6 +279,7 @@ export function AssessmentManagementClient() {
   const [questionDialogLoading, setQuestionDialogLoading] = useState(false)
   const [questionSaving, setQuestionSaving] = useState(false)
   const [questionImageUploading, setQuestionImageUploading] = useState(false)
+  const [questionImagePreviewUrl, setQuestionImagePreviewUrl] = useState<string | null>(null)
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null)
   const [questionForm, setQuestionForm] = useState<QuestionFormState>(createEmptyQuestionForm())
   const [tagsInput, setTagsInput] = useState("")
@@ -288,6 +289,36 @@ export function AssessmentManagementClient() {
   const [categorySaving, setCategorySaving] = useState(false)
   const [categoryForm, setCategoryForm] = useState({ id: "", name: "", display_name: "", description: "" })
   const imageInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (questionImagePreviewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(questionImagePreviewUrl)
+      }
+    }
+  }, [questionImagePreviewUrl])
+
+  useEffect(() => {
+    setQuestionImagePreviewUrl((prev) => {
+      if (!questionForm.question_image_url) {
+        if (prev && !prev.startsWith("blob:")) {
+          return null
+        }
+        return prev
+      }
+
+      if (prev?.startsWith("blob:")) {
+        return prev
+      }
+
+      if (prev === questionForm.question_image_url) {
+        return prev
+      }
+
+      return questionForm.question_image_url
+    })
+  }, [questionForm.question_image_url])
+
   const resetQuestionDialog = () => {
     const defaults = createEmptyQuestionForm()
     setQuestionForm(defaults)
@@ -298,6 +329,12 @@ export function AssessmentManagementClient() {
     setQuestionDialogLoading(false)
     setQuestionSaving(false)
     setQuestionImageUploading(false)
+    setQuestionImagePreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) {
+        URL.revokeObjectURL(prev)
+      }
+      return null
+    })
   }
   const resetCategoryDialog = () => {
     setCategoryForm({ id: "", name: "", display_name: "", description: "" })
@@ -582,6 +619,24 @@ export function AssessmentManagementClient() {
     }
   }
   const handleQuestionImageUpload = async (file: File) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file")
+      return
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image size must be less than 5MB")
+      return
+    }
+
+    const previewUrl = URL.createObjectURL(file)
+    setQuestionImagePreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) {
+        URL.revokeObjectURL(prev)
+      }
+      return previewUrl
+    })
+
     setQuestionImageUploading(true)
     try {
       const formData = new FormData()
@@ -598,10 +653,17 @@ export function AssessmentManagementClient() {
     } catch (error) {
       console.error(error)
       toast.error("Failed to upload image")
+      setQuestionImagePreviewUrl((prev) => {
+        if (prev?.startsWith("blob:")) {
+          URL.revokeObjectURL(prev)
+        }
+        return null
+      })
     } finally {
       setQuestionImageUploading(false)
     }
   }
+
   const handleAddOption = () => {
     setQuestionForm((prev) => {
       if (prev.options.length >= MAX_OPTIONS) return prev
@@ -1307,10 +1369,10 @@ export function AssessmentManagementClient() {
                           )}
                           {questionImageUploading ? "Uploading..." : "Upload image"}
                         </Button>
-                        {questionForm.question_image_url && (
+                        {(questionImagePreviewUrl || questionForm.question_image_url) && (
                           <div className="flex items-center gap-3 text-sm text-muted-foreground">
                             <img
-                              src={questionForm.question_image_url}
+                              src={questionImagePreviewUrl || questionForm.question_image_url || undefined}
                               alt="Question visual"
                               className="h-14 w-14 rounded border object-cover"
                             />
@@ -1318,7 +1380,15 @@ export function AssessmentManagementClient() {
                               type="button"
                               variant="ghost"
                               className="text-destructive"
-                              onClick={() => setQuestionForm((prev) => ({ ...prev, question_image_url: null }))}
+                              onClick={() => {
+                                setQuestionForm((prev) => ({ ...prev, question_image_url: null }))
+                                setQuestionImagePreviewUrl((prev) => {
+                                  if (prev?.startsWith("blob:")) {
+                                    URL.revokeObjectURL(prev)
+                                  }
+                                  return null
+                                })
+                              }}
                             >
                               Remove
                             </Button>

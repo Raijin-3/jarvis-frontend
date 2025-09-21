@@ -27,7 +27,8 @@ import {
   ChevronRight,
   BookMarked,
   PenTool,
-  HelpCircle
+  HelpCircle,
+  Upload
 } from "lucide-react";
 
 /* =========================
@@ -61,10 +62,13 @@ type Section = {
   order_index?: number;
   status?: "draft" | "published" | "archived";
 };
+
+
 type Module = { 
   id: Id; 
   title: string; 
   sections: Section[]; 
+  exercises: ModuleExercise[];
   deleted?: boolean; 
   description?: string;
   order_index?: number;
@@ -268,6 +272,56 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
     }
   };
 
+  const publishCourse = async (courseId: Id) => {
+    const course = courses.find(c => c.id === courseId);
+    if (!course) return;
+
+    const isPublished = course.status === "published";
+    const action = isPublished ? "unpublish" : "publish";
+    const newStatus = isPublished ? "draft" : "published";
+    
+    if (!confirm(`Are you sure you want to ${action} this course?`)) return;
+    
+    try {
+      const res = await fetch(`/api/admin/courses/${courseId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `Failed to ${action} course`);
+
+      const updated = unwrapData<Course>(json);
+      setCourses((prev) => prev.map(c => c.id === courseId ? updated : c));
+      setFull((prev) => ({ ...prev, [courseId]: { ...prev[courseId], ...updated } }));
+      toast.success(`Course ${action}ed successfully`);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : `Failed to ${action} course`);
+    }
+  };
+
+  const handleDeleteModuleExercise = async (exerciseId: Id) => {
+    if (!confirm("Are you sure you want to delete this exercise? This action cannot be undone.")) return;
+    try {
+      const res = await fetch(`/api/admin/module-exercises/${exerciseId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json?.error || "Failed to delete exercise");
+      }
+
+      // Reload the course data
+      if (selectedCourse) {
+        await loadCourse(selectedCourse, true);
+      }
+      
+      toast.success("Exercise deleted successfully");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete exercise");
+    }
+  };
+
   const loadCourse = async (id: Id, force: boolean = false): Promise<CourseFull | undefined> => {
     if (!force && full[id]) return full[id];
     
@@ -335,6 +389,8 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
     }
   };
 
+
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/50">
       <div className="mx-auto max-w-7xl p-6 space-y-8">
@@ -350,9 +406,9 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                   </div>
                   <div>
                     <h1 className="text-3xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent">
-                      Enhanced Course Management
+                    Course Management
                     </h1>
-                    <p className="text-gray-600">Complete CRUD operations for courses, subjects, modules & sections</p>
+                    <p className="text-gray-600">Complete operations for courses, subjects, modules & sections</p>
                   </div>
                 </div>
                 <p className="text-gray-600 max-w-2xl">
@@ -500,6 +556,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     setShowEditCourseModal(true);
                   }}
                   onDelete={() => deleteCourse(course.id)}
+                  onPublish={() => publishCourse(course.id)}
                   isSelected={selectedCourse === course.id}
                   isLoading={loadingId === course.id}
                 />
@@ -545,6 +602,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 }}
                 onEditCourse={() => setShowEditCourseModal(true)}
                 onDeleteCourse={() => deleteCourse(selectedCourse)}
+                onPublish={() => publishCourse(selectedCourse)}
               />
             ) : (
               <div className="rounded-xl border border-white/20 bg-white/80 backdrop-blur-xl p-8 text-center">
@@ -854,6 +912,7 @@ function EnhancedCourseCard({
   onClick, 
   onEdit,
   onDelete,
+  onPublish,
   isSelected, 
   isLoading 
 }: { 
@@ -861,6 +920,7 @@ function EnhancedCourseCard({
   onClick: () => void; 
   onEdit: () => void;
   onDelete: () => void;
+  onPublish: () => void;
   isSelected: boolean;
   isLoading: boolean;
 }) {
@@ -928,6 +988,19 @@ function EnhancedCourseCard({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    onPublish();
+                    setShowMenu(false);
+                  }}
+                  className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
+                    course.status === "published" ? "text-orange-600" : "text-green-600"
+                  }`}
+                >
+                  <Upload className="h-4 w-4" />
+                  {course.status === "published" ? "Unpublish" : "Publish"}
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
                     onDelete();
                     setShowMenu(false);
                   }}
@@ -985,7 +1058,8 @@ function EnhancedCourseDetailsPanel({
   onAddSection,
   onEditSection,
   onEditCourse,
-  onDeleteCourse 
+  onDeleteCourse,
+  onPublish
 }: { 
   course: CourseFull; 
   onAddSubject: () => void; 
@@ -994,6 +1068,7 @@ function EnhancedCourseDetailsPanel({
   onEditSection: (moduleId: string, section: Section) => void;
   onEditCourse: () => void;
   onDeleteCourse: () => void;
+  onPublish: () => void;
 }) {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
 
@@ -1016,6 +1091,18 @@ function EnhancedCourseDetailsPanel({
             </Button>
             <Button size="sm" variant="outline" className="rounded-lg">
               <Eye className="h-4 w-4" />
+            </Button>
+            <Button 
+              size="sm" 
+              variant="outline" 
+              className={`rounded-lg ${
+                course.status === "published" 
+                  ? "text-orange-600 hover:text-orange-700 border-orange-200 hover:border-orange-300" 
+                  : "text-green-600 hover:text-green-700 border-green-200 hover:border-green-300"
+              }`}
+              onClick={onPublish}
+            >
+              <Upload className="h-4 w-4" />
             </Button>
             <Button size="sm" variant="outline" className="rounded-lg text-red-600 hover:text-red-700" onClick={onDeleteCourse}>
               <Trash2 className="h-4 w-4" />
@@ -1113,7 +1200,9 @@ function EnhancedCourseDetailsPanel({
                             <span className="text-sm font-medium text-gray-800">{module.title}</span>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500">{module.sections.length} sections</span>
+                            <span className="text-xs text-gray-500">
+                              {module.sections.length} sections
+                            </span>
                             <button 
                               className="p-1 hover:bg-gray-200 rounded"
                               onClick={() => onAddSection(module.id)}
@@ -1133,44 +1222,51 @@ function EnhancedCourseDetailsPanel({
                       
                       {expandedItems[module.id] && (
                         <div className="px-4 pb-2 space-y-1">
-                          {module.sections.map((section) => (
-                            <div key={section.id} className="flex items-center justify-between p-2 bg-white rounded border border-gray-100">
-                              <div className="flex items-center gap-2">
-                                <FileText className="h-3 w-3 text-purple-600" />
-                                <span className="text-sm text-gray-700">{section.title}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                {section.lecture && (
-                                  <div className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
-                                    <PlayCircle className="h-3 w-3" />
-                                    <span>Lecture</span>
+                          
+                          {/* Sections */}
+                          {module.sections.length > 0 && (
+                            <div>
+                              <div className="text-xs font-medium text-gray-600 mb-1 px-2">Sections</div>
+                              {module.sections.map((section) => (
+                                <div key={section.id} className="flex items-center justify-between p-2 bg-white rounded border border-gray-100">
+                                  <div className="flex items-center gap-2">
+                                    <FileText className="h-3 w-3 text-purple-600" />
+                                    <span className="text-sm text-gray-700">{section.title}</span>
                                   </div>
-                                )}
-                                {section.practices.length > 0 && (
-                                  <div className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
-                                    <PenTool className="h-3 w-3" />
-                                    <span>{section.practices.length}</span>
+                                  <div className="flex items-center gap-1">
+                                    {section.lecture && (
+                                      <div className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
+                                        <PlayCircle className="h-3 w-3" />
+                                        <span>Lecture</span>
+                                      </div>
+                                    )}
+                                    {section.practices.length > 0 && (
+                                      <div className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
+                                        <PenTool className="h-3 w-3" />
+                                        <span>{section.practices.length}</span>
+                                      </div>
+                                    )}
+                                    {section.quiz && (
+                                      <div className="flex items-center gap-1 px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">
+                                        <HelpCircle className="h-3 w-3" />
+                                        <span>Quiz</span>
+                                      </div>
+                                    )}
+                                    <button 
+                                      className="p-1 hover:bg-gray-200 rounded"
+                                      onClick={() => onEditSection(module.id, section)}
+                                      title="Edit Section"
+                                    >
+                                      <Edit className="h-3 w-3 text-gray-400" />
+                                    </button>
+                                    <button className="p-1 hover:bg-gray-200 rounded">
+                                      <Trash2 className="h-3 w-3 text-red-400" />
+                                    </button>
                                   </div>
-                                )}
-                                {section.quiz && (
-                                  <div className="flex items-center gap-1 px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">
-                                    <HelpCircle className="h-3 w-3" />
-                                    <span>Quiz</span>
-                                  </div>
-                                )}
-                                <button 
-                                  className="p-1 hover:bg-gray-200 rounded"
-                                  onClick={() => onEditSection(module.id, section)}
-                                  title="Edit Section"
-                                >
-                                  <Edit className="h-3 w-3 text-gray-400" />
-                                </button>
-                                <button className="p-1 hover:bg-gray-200 rounded">
-                                  <Trash2 className="h-3 w-3 text-red-400" />
-                                </button>
-                              </div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          )}
                         </div>
                       )}
                     </div>
@@ -1543,6 +1639,26 @@ function SectionModal({
     language?: string;
     codeTemplate?: string;
   };
+
+  type ExerciseForm = {
+    id: string;
+    title: string;
+    content: string;
+    difficulty: "easy" | "medium" | "hard";
+    type: "practice" | "assignment" | "lab" | "project";
+    timeLimit?: number;
+    passingScore?: number;
+    maxAttempts?: number;
+  };
+
+  type LectureForm = {
+    id: string;
+    title: string;
+    content: string;
+    type: "text" | "video" | "image" | "audio" | "pdf";
+    duration?: number;
+    url?: string;
+  };
   const [formData, setFormData] = useState({
     title: section?.title || "",
     status: (section?.status as "draft" | "published" | "archived") || "draft",
@@ -1551,10 +1667,12 @@ function SectionModal({
     lectureContent: section?.lecture?.content || "",
     lectureType: "text" as "text" | "video" | "image",
     lectureDuration: section?.lecture?.duration || 0,
+    lectureItems: [] as LectureForm[],
     hasExercise: !!section?.practices && section.practices.length > 0,
     exerciseTitle: section?.practices?.[0]?.title || "",
     exerciseContent: section?.practices?.[0]?.content || "",
     exerciseDifficulty: (section?.practices?.[0]?.difficulty as "easy" | "medium" | "hard") || "easy",
+    exerciseItems: [] as ExerciseForm[],
     hasQuiz: !!section?.quiz,
     quizTitle: section?.quiz?.title || "",
     quizQuestions: section?.quiz?.totalQuestions || 5,
@@ -1585,29 +1703,97 @@ function SectionModal({
     }
   }, [section]);
 
+  // Prefill exercise builder with existing exercises on edit
+  useEffect(() => {
+    if (section?.practices && Array.isArray(section.practices) && section.practices.length > 0) {
+      const items: ExerciseForm[] = (section.practices as Record<string, unknown>[]).map((e: Record<string, unknown>) => ({
+        id: e.id as string,
+        title: (e.title as string) || '',
+        content: (e.content as string) || '',
+        difficulty: (e.difficulty as "easy" | "medium" | "hard") || 'easy',
+        type: (e.type as "practice" | "assignment" | "lab" | "project") || 'practice',
+        timeLimit: e.time_limit as number,
+        passingScore: e.passing_score as number,
+        maxAttempts: e.max_attempts as number,
+      }));
+      setFormData(prev => ({
+        ...prev,
+        hasExercise: true,
+        exerciseTitle: items[0]?.title || prev.exerciseTitle,
+        exerciseContent: items[0]?.content || prev.exerciseContent,
+        exerciseDifficulty: items[0]?.difficulty || prev.exerciseDifficulty,
+        exerciseItems: items,
+      }));
+    }
+  }, [section]);
+
+  // Prefill lecture builder with existing lectures on edit
+  useEffect(() => {
+    if (section?.lecture) {
+      const lectureItem: LectureForm = {
+        id: section.lecture.id as string || `lecture-${Date.now()}`,
+        title: (section.lecture.title as string) || '',
+        content: (section.lecture.content as string) || '',
+        type: (section.lecture.type as "text" | "video" | "image" | "audio" | "pdf") || 'text',
+        duration: section.lecture.duration as number,
+        url: (section.lecture.url as string) || '',
+      };
+      setFormData(prev => ({
+        ...prev,
+        hasLecture: true,
+        lectureTitle: lectureItem.title || prev.lectureTitle,
+        lectureContent: lectureItem.content || prev.lectureContent,
+        lectureType: lectureItem.type || prev.lectureType,
+        lectureDuration: lectureItem.duration || prev.lectureDuration,
+        lectureItems: [lectureItem],
+      }));
+    }
+  }, [section]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
     const sectionData: Partial<Section> = {
       title: formData.title,
       status: formData.status,
-      lecture: formData.hasLecture ? {
-        title: formData.lectureTitle,
-        content: formData.lectureContent,
-        duration: formData.lectureDuration,
-        type: formData.lectureType
+      // Multi-lecture support - use first lecture for backward compatibility or create new structure
+      lecture: formData.lectureItems.length > 0 ? {
+        title: formData.lectureItems[0].title,
+        content: formData.lectureItems[0].content,
+        duration: formData.lectureItems[0].duration,
+        type: formData.lectureItems[0].type,
+        url: formData.lectureItems[0].url,
       } : null,
-      practices: formData.hasExercise ? [{
-        id: `practice-${Date.now()}`,
-        title: formData.exerciseTitle,
-        content: formData.exerciseContent,
-        difficulty: formData.exerciseDifficulty
-      }] : [],
-      quiz: formData.hasQuiz ? {
+      // Multi-lecture data for enhanced storage
+      lectures: formData.lectureItems.map((lecture, idx) => ({
+        id: lecture.id,
+        title: lecture.title,
+        content: lecture.content,
+        duration: lecture.duration,
+        type: lecture.type,
+        url: lecture.url,
+        order_index: idx + 1,
+      })),
+      // Multi-exercise support 
+      practices: formData.exerciseItems.map((exercise, idx) => ({
+        id: exercise.id,
+        title: exercise.title,
+        content: exercise.description,
+        difficulty: exercise.difficulty,
+        type: exercise.type,
+        points: exercise.points,
+        timeLimit: exercise.timeLimit,
+        instructions: exercise.instructions,
+        starterCode: exercise.starterCode,
+        language: exercise.language,
+        expectedOutput: exercise.expectedOutput,
+        order_index: idx + 1,
+      })),
+      quiz: formData.quizItems.length > 0 ? {
         id: `quiz-${Date.now()}`,
         title: formData.quizTitle,
-        totalQuestions: (formData.quizItems?.length || formData.quizQuestions),
-        questions: (formData.quizItems || []).map((q, idx) => ({
+        totalQuestions: formData.quizItems.length,
+        questions: formData.quizItems.map((q, idx) => ({
           id: q.id,
           text: q.text,
           type: q.type,
@@ -1679,118 +1865,425 @@ function SectionModal({
                   onChange={(e) => setFormData(prev => ({ ...prev, hasLecture: e.target.checked }))}
                   className="rounded"
                 />
-                <Label htmlFor="has-lecture">Include Lecture</Label>
+                <Label htmlFor="has-lecture">Include Lectures</Label>
               </div>
 
               {formData.hasLecture && (
-                <>
-                  <div>
-                    <Label htmlFor="lecture-title">Lecture Title</Label>
-                    <Input
-                      id="lecture-title"
-                      type="text"
-                      value={formData.lectureTitle}
-                      onChange={(e) => setFormData(prev => ({ ...prev, lectureTitle: e.target.value }))}
-                      placeholder="Enter lecture title..."
-                      className="rounded-xl"
-                    />
+                <div className="space-y-4 mt-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900">Lectures</h4>
                   </div>
-                  
-                  <div>
-                    <Label htmlFor="lecture-type">Lecture Type</Label>
-                    <select
-                      id="lecture-type"
-                      value={formData.lectureType}
-                      onChange={(e) => setFormData(prev => ({ ...prev, lectureType: e.target.value as any }))}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
-                    >
-                      <option value="text">Text Content</option>
-                      <option value="video">Video</option>
-                      <option value="image">Image</option>
-                    </select>
+
+                  {formData.lectureItems.length === 0 && (
+                    <div className="text-sm text-gray-600 bg-gray-50 rounded-xl p-3">
+                      No lectures yet. Click "Add Lecture" to start building.
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    {formData.lectureItems.map((lecture, li) => (
+                      <div key={lecture.id} className="rounded-xl border border-gray-200 p-4 bg-white">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm text-gray-700">Type</Label>
+                            <select
+                              value={lecture.type}
+                              onChange={(e) => setFormData(prev => {
+                                const lectureItems = [...prev.lectureItems];
+                                lectureItems[li] = {
+                                  ...lecture,
+                                  type: e.target.value as "text" | "video" | "image" | "audio" | "pdf",
+                                };
+                                return { ...prev, lectureItems };
+                              })}
+                              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                            >
+                              <option value="text">Text</option>
+                              <option value="video">Video</option>
+                              <option value="image">Image</option>
+                              <option value="audio">Audio</option>
+                              <option value="pdf">PDF</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="rounded-lg text-red-600 hover:text-red-700"
+                              onClick={() => setFormData(prev => ({
+                                ...prev,
+                                lectureItems: prev.lectureItems.filter((_, i) => i !== li)
+                              }))}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          <div>
+                            <Label>Lecture Title</Label>
+                            <Input
+                              value={lecture.title}
+                              onChange={(e) => setFormData(prev => {
+                                const lectureItems = [...prev.lectureItems];
+                                lectureItems[li] = { ...lecture, title: e.target.value };
+                                return { ...prev, lectureItems };
+                              })}
+                              placeholder="Enter lecture title..."
+                              className="rounded-xl"
+                            />
+                          </div>
+
+                          <div>
+                            <Label>Content</Label>
+                            <textarea
+                              value={lecture.content}
+                              onChange={(e) => setFormData(prev => {
+                                const lectureItems = [...prev.lectureItems];
+                                lectureItems[li] = { ...lecture, content: e.target.value };
+                                return { ...prev, lectureItems };
+                              })}
+                              placeholder={`Enter ${lecture.type === 'text' ? 'text content' : lecture.type === 'video' ? 'video URL or embed code' : lecture.type === 'audio' ? 'audio URL' : lecture.type === 'pdf' ? 'PDF URL' : 'image URL'}...`}
+                              rows={4}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-none"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <Label>Duration (minutes)</Label>
+                              <Input
+                                type="number"
+                                value={lecture.duration || ""}
+                                onChange={(e) => setFormData(prev => {
+                                  const lectureItems = [...prev.lectureItems];
+                                  lectureItems[li] = { ...lecture, duration: parseInt(e.target.value) || 0 };
+                                  return { ...prev, lectureItems };
+                                })}
+                                placeholder="Duration in minutes"
+                                className="rounded-xl"
+                                min="0"
+                              />
+                            </div>
+                            <div>
+                              <Label>URL (optional)</Label>
+                              <Input
+                                value={lecture.url || ""}
+                                onChange={(e) => setFormData(prev => {
+                                  const lectureItems = [...prev.lectureItems];
+                                  lectureItems[li] = { ...lecture, url: e.target.value };
+                                  return { ...prev, lectureItems };
+                                })}
+                                placeholder="External URL"
+                                className="rounded-xl"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   <div>
-                    <Label htmlFor="lecture-content">Lecture Content</Label>
-                    <textarea
-                      id="lecture-content"
-                      value={formData.lectureContent}
-                      onChange={(e) => setFormData(prev => ({ ...prev, lectureContent: e.target.value }))}
-                      placeholder={`Enter ${formData.lectureType === 'text' ? 'text content' : formData.lectureType === 'video' ? 'video URL or embed code' : 'image URL'}...`}
-                      rows={4}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-none"
-                    />
-                  </div>
-                  
-                  <div>
-                    <Label htmlFor="lecture-duration">Duration (minutes)</Label>
-                    <Input
-                      id="lecture-duration"
-                      type="number"
-                      value={formData.lectureDuration}
-                      onChange={(e) => setFormData(prev => ({ ...prev, lectureDuration: parseInt(e.target.value) || 0 }))}
-                      placeholder="Duration in minutes"
+                    <Button
+                      type="button"
+                      variant="outline"
                       className="rounded-xl"
-                      min="0"
-                    />
+                      onClick={() => setFormData(prev => ({
+                        ...prev,
+                        lectureItems: [
+                          ...prev.lectureItems,
+                          {
+                            id: `lecture-${Date.now()}`,
+                            title: "",
+                            content: "",
+                            type: "text",
+                            duration: 0,
+                            url: "",
+                          },
+                        ],
+                      }))}
+                    >
+                      <Plus className="h-4 w-4 mr-2" /> Add Lecture
+                    </Button>
                   </div>
-                </>
+                </div>
               )}
             </div>
 
-            {/* Exercise Configuration */}
+            {/* Exercises Configuration */}
             <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <input
-                  id="has-exercise"
-                  type="checkbox"
-                  checked={formData.hasExercise}
-                  onChange={(e) => setFormData(prev => ({ ...prev, hasExercise: e.target.checked }))}
-                  className="rounded"
-                />
-                <Label htmlFor="has-exercise">Include Exercise</Label>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="has-exercises"
+                    type="checkbox"
+                    checked={formData.exerciseItems.length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setFormData(prev => ({
+                          ...prev,
+                          exerciseItems: [{
+                            id: `ex-${Date.now()}`,
+                            title: '',
+                            description: '',
+                            difficulty: 'easy' as const,
+                            type: 'practical' as const,
+                            points: 10,
+                            timeLimit: 30,
+                            instructions: '',
+                            starterCode: '',
+                            language: 'python',
+                            expectedOutput: '',
+                          }]
+                        }))
+                      } else {
+                        setFormData(prev => ({ ...prev, exerciseItems: [] }))
+                      }
+                    }}
+                    className="rounded"
+                  />
+                  <Label htmlFor="has-exercises">Include Exercises</Label>
+                </div>
+                {formData.exerciseItems.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl text-sm"
+                    onClick={() => setFormData(prev => ({
+                      ...prev,
+                      exerciseItems: [
+                        ...prev.exerciseItems,
+                        {
+                          id: `ex-${Date.now()}`,
+                          title: '',
+                          description: '',
+                          difficulty: 'easy' as const,
+                          type: 'practical' as const,
+                          points: 10,
+                          timeLimit: 30,
+                          instructions: '',
+                          starterCode: '',
+                          language: 'python',
+                          expectedOutput: '',
+                        }
+                      ]
+                    }))}
+                  >
+                    <Plus className="h-4 w-4 mr-2" /> Add Exercise
+                  </Button>
+                )}
               </div>
 
-              {formData.hasExercise && (
-                <>
-                  <div>
-                    <Label htmlFor="exercise-title">Exercise Title</Label>
-                    <Input
-                      id="exercise-title"
-                      type="text"
-                      value={formData.exerciseTitle}
-                      onChange={(e) => setFormData(prev => ({ ...prev, exerciseTitle: e.target.value }))}
-                      placeholder="Enter exercise title..."
-                      className="rounded-xl"
-                    />
+              {formData.exerciseItems.length > 0 && (
+                <div className="space-y-4 mt-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900">Exercises ({formData.exerciseItems.length})</h4>
+                  </div>
+
+                  <div className="space-y-4">
+                    {formData.exerciseItems.map((exercise, ei) => (
+                      <div key={exercise.id} className="rounded-xl border border-gray-200 p-4 bg-white">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm text-gray-700">Exercise {ei + 1}</Label>
+                            <select
+                              value={exercise.type}
+                              onChange={(e) => setFormData(prev => {
+                                const exerciseItems = [...prev.exerciseItems];
+                                exerciseItems[ei] = {
+                                  ...exercise,
+                                  type: e.target.value as "practical" | "theoretical" | "coding" | "project",
+                                };
+                                return { ...prev, exerciseItems };
+                              })}
+                              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                            >
+                              <option value="practical">Practical</option>
+                              <option value="theoretical">Theoretical</option>
+                              <option value="coding">Coding</option>
+                              <option value="project">Project</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="rounded-lg text-red-600 hover:text-red-700"
+                              onClick={() => setFormData(prev => ({
+                                ...prev,
+                                exerciseItems: prev.exerciseItems.filter((_, i) => i !== ei)
+                              }))}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
+                          <div>
+                            <Label>Exercise Title</Label>
+                            <Input
+                              value={exercise.title}
+                              onChange={(e) => setFormData(prev => {
+                                const exerciseItems = [...prev.exerciseItems];
+                                exerciseItems[ei] = { ...exercise, title: e.target.value };
+                                return { ...prev, exerciseItems };
+                              })}
+                              placeholder="Enter exercise title..."
+                              className="rounded-xl"
+                            />
+                          </div>
+
+                          <div>
+                            <Label>Description</Label>
+                            <textarea
+                              value={exercise.description}
+                              onChange={(e) => setFormData(prev => {
+                                const exerciseItems = [...prev.exerciseItems];
+                                exerciseItems[ei] = { ...exercise, description: e.target.value };
+                                return { ...prev, exerciseItems };
+                              })}
+                              placeholder="Describe what students need to accomplish..."
+                              rows={2}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-none"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                              <Label>Difficulty</Label>
+                              <select
+                                value={exercise.difficulty}
+                                onChange={(e) => setFormData(prev => {
+                                  const exerciseItems = [...prev.exerciseItems];
+                                  exerciseItems[ei] = { ...exercise, difficulty: e.target.value as any };
+                                  return { ...prev, exerciseItems };
+                                })}
+                                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm"
+                              >
+                                <option value="easy">Easy</option>
+                                <option value="medium">Medium</option>
+                                <option value="hard">Hard</option>
+                              </select>
+                            </div>
+                            <div>
+                              <Label>Points</Label>
+                              <Input
+                                type="number"
+                                value={exercise.points}
+                                onChange={(e) => setFormData(prev => {
+                                  const exerciseItems = [...prev.exerciseItems];
+                                  exerciseItems[ei] = { ...exercise, points: parseInt(e.target.value) || 10 };
+                                  return { ...prev, exerciseItems };
+                                })}
+                                placeholder="Points"
+                                className="rounded-xl"
+                              />
+                            </div>
+                            <div>
+                              <Label>Time Limit (min)</Label>
+                              <Input
+                                type="number"
+                                value={exercise.timeLimit}
+                                onChange={(e) => setFormData(prev => {
+                                  const exerciseItems = [...prev.exerciseItems];
+                                  exerciseItems[ei] = { ...exercise, timeLimit: parseInt(e.target.value) || 30 };
+                                  return { ...prev, exerciseItems };
+                                })}
+                                placeholder="Minutes"
+                                className="rounded-xl"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <Label>Instructions</Label>
+                            <textarea
+                              value={exercise.instructions}
+                              onChange={(e) => setFormData(prev => {
+                                const exerciseItems = [...prev.exerciseItems];
+                                exerciseItems[ei] = { ...exercise, instructions: e.target.value };
+                                return { ...prev, exerciseItems };
+                              })}
+                              placeholder="Detailed step-by-step instructions..."
+                              rows={3}
+                              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-y"
+                            />
+                          </div>
+
+                          {exercise.type === "coding" && (
+                            <div className="space-y-3 bg-gray-50 rounded-xl p-3">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <Label>Programming Language</Label>
+                                  <select
+                                    value={exercise.language || 'python'}
+                                    onChange={(e) => setFormData(prev => {
+                                      const exerciseItems = [...prev.exerciseItems];
+                                      exerciseItems[ei] = { ...exercise, language: e.target.value };
+                                      return { ...prev, exerciseItems };
+                                    })}
+                                    className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm"
+                                  >
+                                    <option value="python">Python</option>
+                                    <option value="javascript">JavaScript</option>
+                                    <option value="java">Java</option>
+                                    <option value="c">C</option>
+                                    <option value="cpp">C++</option>
+                                    <option value="html">HTML</option>
+                                    <option value="css">CSS</option>
+                                  </select>
+                                </div>
+                                <div>
+                                  <Label>Expected Output (optional)</Label>
+                                  <Input
+                                    value={exercise.expectedOutput || ''}
+                                    onChange={(e) => setFormData(prev => {
+                                      const exerciseItems = [...prev.exerciseItems];
+                                      exerciseItems[ei] = { ...exercise, expectedOutput: e.target.value };
+                                      return { ...prev, exerciseItems };
+                                    })}
+                                    placeholder="Expected output"
+                                    className="rounded-xl"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <Label>Starter Code (optional)</Label>
+                                <textarea
+                                  value={exercise.starterCode || ''}
+                                  onChange={(e) => setFormData(prev => {
+                                    const exerciseItems = [...prev.exerciseItems];
+                                    exerciseItems[ei] = { ...exercise, starterCode: e.target.value };
+                                    return { ...prev, exerciseItems };
+                                  })}
+                                  rows={4}
+                                  placeholder="# Provide starter code here..."
+                                  className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-y font-mono"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                   
-                  <div>
-                    <Label htmlFor="exercise-content">Exercise Content</Label>
-                    <textarea
-                      id="exercise-content"
-                      value={formData.exerciseContent}
-                      onChange={(e) => setFormData(prev => ({ ...prev, exerciseContent: e.target.value }))}
-                      placeholder="Enter exercise description and instructions..."
-                      rows={4}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-none"
-                    />
+                  <div className="text-sm text-gray-600 bg-green-50 p-3 rounded-xl">
+                    <p className="font-medium text-green-900 mb-2">Exercise Types Supported:</p>
+                    <ul className="space-y-1 text-green-800">
+                      <li>• Practical - Hands-on tasks and assignments</li>
+                      <li>• Theoretical - Written analysis and research</li>
+                      <li>• Coding - Programming challenges with IDE support</li>
+                      <li>• Project - Complex multi-step assignments</li>
+                    </ul>
+                    <p className="mt-2 text-green-700">
+                      Each exercise can be customized with difficulty, points, and time limits.
+                    </p>
                   </div>
-                  
-                  <div>
-                    <Label htmlFor="exercise-difficulty">Difficulty</Label>
-                    <select
-                      id="exercise-difficulty"
-                      value={formData.exerciseDifficulty}
-                      onChange={(e) => setFormData(prev => ({ ...prev, exerciseDifficulty: e.target.value as any }))}
-                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20"
-                    >
-                      <option value="easy">Easy</option>
-                      <option value="medium">Medium</option>
-                      <option value="hard">Hard</option>
-                    </select>
-                  </div>
-                </>
+                </div>
               )}
             </div>
 

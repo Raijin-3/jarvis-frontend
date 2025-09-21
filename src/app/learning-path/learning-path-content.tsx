@@ -46,7 +46,66 @@ interface LearningPathStep {
   skills: string[];
   prerequisites: string[];
   is_required: boolean;
+  course_structure?: CourseStructure;
 }
+
+interface CourseStructure {
+  courses: Course[];
+}
+
+interface Course {
+  id: string;
+  title: string;
+  description?: string;
+  subjects: Subject[];
+}
+
+interface Subject {
+  id: string;
+  title: string;
+  course_id: string;
+  order_index?: number;
+  modules: LearningModule[];
+}
+
+interface LearningModule {
+  id: string;
+  title: string;
+  subject_id: string;
+  order_index?: number;
+  is_mandatory: boolean;
+  assessment_based: boolean;
+  sections: ModuleSection[];
+}
+
+interface ModuleSection {
+  id: string;
+  title: string;
+  module_id: string;
+  order_index?: number;
+}
+
+const getCourseBadgeLabel = (title: string | undefined, index: number): string => {
+  if (!title) {
+    return `C${index + 1}`;
+  }
+
+  const parts = title.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return `C${index + 1}`;
+  }
+
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+};
+
+const hasCourseStructure = (
+  step: LearningPathStep
+): step is LearningPathStep & { course_structure: CourseStructure } =>
+  Boolean(step.course_structure && step.course_structure.courses?.length);
 
 interface UserProgress {
   learning_path_id: string;
@@ -60,6 +119,7 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
   const [recommendedPath, setRecommendedPath] = useState<LearningPath | null>(null);
   const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
   const [enrolling, setEnrolling] = useState(false);
+  const courseStructureSteps = recommendedPath?.steps?.filter(hasCourseStructure) ?? [];
 
   useEffect(() => {
     loadRecommendedPath();
@@ -341,132 +401,133 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
         </div>
 
         {/* Course Structure Overview */}
-        {recommendedPath.steps && recommendedPath.steps.length > 0 && (
+        {courseStructureSteps.length > 0 && (
           <div className="space-y-6">
             <div className="text-center">
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Course Structure Overview</h2>
-              <p className="text-gray-600">Organized learning path with mandatory and optional modules</p>
+              <p className="text-gray-600">Organized learning path with mandatory and optional modules based on your assessment results</p>
             </div>
 
-            {/* Course -> Subject -> Module Hierarchy */}
+            <div className="space-y-8">
+              {courseStructureSteps.map((step, stepIndex) => (
+                <div key={step.id} className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      {step.title || `Course Group ${stepIndex + 1}`}
+                    </h3>
+                    <div className="text-sm text-gray-500">
+                      Estimated {step.estimated_hours || 0}h - {step.is_required ? 'Mandatory step' : 'Optional step'}
+                    </div>
+                  </div>
+
+                  <div className="bg-white/80 backdrop-blur rounded-xl border border-gray-200 p-6">
+                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+                      {step.course_structure.courses.map((course, courseIndex) => (
+                        <div key={course.id} className="space-y-4">
+                          <div className="flex items-start gap-3">
+                            <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-sm font-bold text-white">
+                              {getCourseBadgeLabel(course.title, courseIndex)}
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="font-semibold text-gray-900 truncate">{course.title}</h4>
+                              {course.description && (
+                                <p className="text-xs text-gray-500">{course.description}</p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-4 pl-1">
+                            {course.subjects.map((subject) => (
+                              <div key={subject.id} className="border-l-2 border-blue-200 pl-4">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-medium text-gray-800">{subject.title}</span>
+                                  <span className="text-xs text-gray-500">
+                                    {subject.modules.length} module{subject.modules.length === 1 ? '' : 's'}
+                                  </span>
+                                </div>
+                                {subject.modules.length > 0 ? (
+                                  <div className="mt-2 space-y-2">
+                                    {subject.modules.map((module) => (
+                                      <div
+                                        key={module.id}
+                                        className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-gray-700">{module.title}</span>
+                                          {module.assessment_based && (
+                                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                                              <Lightbulb className="h-3 w-3" />
+                                              Assessment-based
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div
+                                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                                            module.is_mandatory
+                                              ? 'bg-red-100 text-red-700 border border-red-200'
+                                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                          }`}
+                                        >
+                                          {module.is_mandatory ? 'Mandatory' : 'Optional'}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="mt-2 text-xs italic text-gray-500">Modules will be available soon.</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <Lightbulb className="h-5 w-5 text-amber-600 mt-0.5" />
+                <div>
+                  <h3 className="font-semibold text-amber-900 mb-1">Personalized Learning Path</h3>
+                  <p className="text-sm text-amber-800">
+                    Module requirements are personalized based on your assessment results.
+                    Modules marked as "Optional" indicate areas where you demonstrated proficiency,
+                    while "Mandatory" modules focus on areas that need strengthening.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {recommendedPath.steps && recommendedPath.steps.length > 0 && courseStructureSteps.length === 0 && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Learning Steps</h2>
+              <p className="text-gray-600">Step-by-step progression through your learning journey</p>
+            </div>
+
             <div className="bg-white/80 backdrop-blur rounded-xl border border-gray-200 p-6">
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {/* Data Analytics Course */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center text-white text-lg font-bold">
-                      📊
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Data Analytics</h3>
-                      <p className="text-xs text-gray-500">Core Course</p>
-                    </div>
-                  </div>
-                  
-                  <div className="pl-4 space-y-3">
-                    <div className="border-l-2 border-blue-200 pl-4">
-                      <h4 className="font-medium text-gray-800">Fundamentals</h4>
-                      <div className="space-y-2 mt-2">
-                        {recommendedPath.steps.slice(0, 2).map((step) => (
-                          <div key={step.id} className="flex items-center justify-between text-sm">
-                            <span className="text-gray-700">{step.title}</span>
-                            <div className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              step.is_required 
-                                ? 'bg-red-100 text-red-700' 
-                                : 'bg-blue-100 text-blue-700'
-                            }`}>
-                              {step.is_required ? 'Mandatory' : 'Optional'}
-                            </div>
-                          </div>
-                        ))}
+              <div className="space-y-4">
+                {recommendedPath.steps.map((step, index) => (
+                  <div key={step.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className={`flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')} text-white text-sm font-medium`}>
+                        {index + 1}
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-gray-900">{step.title}</h4>
+                        <p className="text-sm text-gray-600">{step.estimated_hours}h estimated</p>
                       </div>
                     </div>
-                    
-                    <div className="border-l-2 border-purple-200 pl-4">
-                      <h4 className="font-medium text-gray-800">Advanced Topics</h4>
-                      <div className="space-y-2 mt-2">
-                        {recommendedPath.steps.slice(2).map((step) => (
-                          <div key={step.id} className="flex items-center justify-between text-sm">
-                            <span className="text-gray-700">{step.title}</span>
-                            <div className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                              step.is_required 
-                                ? 'bg-red-100 text-red-700' 
-                                : 'bg-blue-100 text-blue-700'
-                            }`}>
-                              {step.is_required ? 'Mandatory' : 'Optional'}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${step.is_required ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                      {step.is_required ? 'Mandatory' : 'Optional'}
                     </div>
                   </div>
-                </div>
-
-                {/* Statistics Course */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 flex items-center justify-center text-white text-lg font-bold">
-                      📈
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Statistics</h3>
-                      <p className="text-xs text-gray-500">Support Course</p>
-                    </div>
-                  </div>
-                  
-                  <div className="pl-4 space-y-3">
-                    <div className="border-l-2 border-emerald-200 pl-4">
-                      <h4 className="font-medium text-gray-800">Descriptive Statistics</h4>
-                      <div className="space-y-2 mt-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-700">Basic Statistics</span>
-                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                            Mandatory
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-700">Data Distribution</span>
-                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                            Optional
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Tools & Technology Course */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 flex items-center justify-center text-white text-lg font-bold">
-                      🛠️
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-gray-900">Tools & Technology</h3>
-                      <p className="text-xs text-gray-500">Practical Course</p>
-                    </div>
-                  </div>
-                  
-                  <div className="pl-4 space-y-3">
-                    <div className="border-l-2 border-amber-200 pl-4">
-                      <h4 className="font-medium text-gray-800">Essential Tools</h4>
-                      <div className="space-y-2 mt-2">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-700">Excel Mastery</span>
-                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                            Mandatory
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="text-gray-700">Power BI</span>
-                          <div className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                            Optional
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>

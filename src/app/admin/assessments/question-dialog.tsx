@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,6 +13,9 @@ import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import { Plus, Loader2, Trash2, Upload, X } from "lucide-react"
 
+const SUPPORTED_QUESTION_TYPES = ["mcq", "image_mcq", "short_text", "text", "image_text", "fill_blank"] as const
+type SupportedQuestionType = (typeof SUPPORTED_QUESTION_TYPES)[number]
+
 type DialogModule = {
   id: string
   title: string
@@ -24,7 +27,7 @@ type DialogModule = {
 
 interface QuestionFormState {
   question_text: string
-  question_type: "mcq" | "short_text" | "fill_blank"
+  question_type: SupportedQuestionType
   module_id: string
   category_id?: string | null
   difficulty_level: "easy" | "medium" | "hard"
@@ -80,6 +83,23 @@ const createEmptyQuestionForm = (): QuestionFormState => ({
   },
 })
 
+const MULTIPLE_CHOICE_TYPES = new Set<SupportedQuestionType>(["mcq", "image_mcq"])
+const TEXT_ANSWER_TYPES = new Set<SupportedQuestionType>(["short_text", "text", "image_text", "fill_blank"])
+const QUESTION_TYPE_OPTIONS: Array<{ value: SupportedQuestionType; label: string }> = [
+  { value: "mcq", label: "Multiple Choice" },
+  { value: "image_mcq", label: "Image Multiple Choice" },
+  { value: "short_text", label: "Short Answer" },
+  { value: "text", label: "Long Answer" },
+  { value: "image_text", label: "Image Prompt (Text Answer)" },
+  { value: "fill_blank", label: "Fill in the Blank" },
+]
+const normalizeQuestionType = (type: string | undefined): SupportedQuestionType =>
+  SUPPORTED_QUESTION_TYPES.includes(type as SupportedQuestionType)
+    ? (type as SupportedQuestionType)
+    : "mcq"
+const isMultipleChoiceType = (type: SupportedQuestionType) => MULTIPLE_CHOICE_TYPES.has(type)
+const isTextAnswerType = (type: SupportedQuestionType) => TEXT_ANSWER_TYPES.has(type)
+
 export function QuestionDialog({
   open,
   onOpenChange,
@@ -94,13 +114,138 @@ export function QuestionDialog({
   const [tagsInput, setTagsInput] = useState("")
   const [alternateAnswersInput, setAlternateAnswersInput] = useState("")
   const [keywordsInput, setKeywordsInput] = useState("")
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const isMultipleChoice = isMultipleChoiceType(form.question_type)
+  const isTextAnswer = isTextAnswerType(form.question_type)
+
+  const resetForm = () => {
+    setForm(createEmptyQuestionForm())
+    setTagsInput("")
+    setAlternateAnswersInput("")
+    setKeywordsInput("")
+    setImagePreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) {
+        URL.revokeObjectURL(prev)
+      }
+      return null
+    })
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (imagePreviewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(imagePreviewUrl)
+      }
+    }
+  }, [imagePreviewUrl])
+
+  useEffect(() => {
+    if (!form.question_image_url) {
+      setImagePreviewUrl((prev) => {
+        if (prev && !prev.startsWith("blob:")) {
+          return null
+        }
+        return prev
+      })
+      return
+    }
+
+    setImagePreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) {
+        return prev
+      }
+      if (prev === form.question_image_url) {
+        return prev
+      }
+      // form.question_image_url can be undefined, coerce to null to satisfy state type string | null
+      return form.question_image_url ?? null
+    })
+  }, [form.question_image_url])
+
+  useEffect(() => {
+    if (!open) {
+      resetForm()
+      return
+    }
+
+    if (!editingQuestion) {
+      resetForm()
+      return
+    }
+
+    const baseForm = createEmptyQuestionForm()
+    const normalizedType = normalizeQuestionType(editingQuestion.question_type)
+
+    const normalizedOptions =
+      isMultipleChoiceType(normalizedType) &&
+      Array.isArray(editingQuestion.options) &&
+      editingQuestion.options.length > 0
+        ? editingQuestion.options.map((option: any) => ({
+            option_text: option.option_text ?? "",
+            is_correct: Boolean(option.is_correct),
+            explanation: option.explanation ?? "",
+          }))
+        : baseForm.options
+
+    const normalizedTextAnswer =
+      isTextAnswerType(normalizedType) && editingQuestion.text_answer
+        ? {
+            correct_answer: editingQuestion.text_answer.correct_answer ?? "",
+            case_sensitive: Boolean(editingQuestion.text_answer.case_sensitive),
+            exact_match: Boolean(editingQuestion.text_answer.exact_match),
+            alternate_answers: Array.isArray(editingQuestion.text_answer.alternate_answers)
+              ? editingQuestion.text_answer.alternate_answers
+              : [],
+            keywords: Array.isArray(editingQuestion.text_answer.keywords)
+              ? editingQuestion.text_answer.keywords
+              : [],
+          }
+        : { ...baseForm.text_answer }
+
+    setForm({
+      question_text: editingQuestion.question_text ?? "",
+      question_type: normalizedType,
+      module_id: editingQuestion.module_id ?? "",
+      category_id: editingQuestion.category_id ?? null,
+      difficulty_level: editingQuestion.difficulty_level ?? baseForm.difficulty_level,
+      points_value: editingQuestion.points_value ?? baseForm.points_value,
+      time_limit_seconds: editingQuestion.time_limit_seconds ?? baseForm.time_limit_seconds,
+      explanation: editingQuestion.explanation ?? "",
+      tags: Array.isArray(editingQuestion.tags) ? editingQuestion.tags : [],
+      question_image_url: editingQuestion.question_image_url ?? null,
+      options: normalizedOptions.length >= 2 ? normalizedOptions : baseForm.options,
+      text_answer: normalizedTextAnswer,
+    })
+
+    setTagsInput((Array.isArray(editingQuestion.tags) ? editingQuestion.tags : []).join(", "))
+    setAlternateAnswersInput(
+      normalizedTextAnswer.alternate_answers.length > 0
+        ? normalizedTextAnswer.alternate_answers.join(", ")
+        : ""
+    )
+    setKeywordsInput(
+      normalizedTextAnswer.keywords.length > 0
+        ? normalizedTextAnswer.keywords.join(", ")
+        : ""
+    )
+    setImagePreviewUrl(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ""
+    }
+  }, [open, editingQuestion])
 
   const getModuleLabel = (module: DialogModule | null | undefined) => {
     if (!module) return ""
     const parts = [module.course_title, module.subject_title, module.title].filter(Boolean) as string[]
     return parts.length > 0 ? parts.join(' - ') : module.title
   }
+
+
 
   const handleSave = async () => {
     if (!form.question_text.trim()) {
@@ -113,22 +258,22 @@ export function QuestionDialog({
       return
     }
 
-    if (form.question_type === "mcq") {
+    if (isMultipleChoice) {
       const hasValidOptions = form.options.every(opt => opt.option_text.trim())
       const hasCorrectAnswer = form.options.some(opt => opt.is_correct)
-      
+
       if (!hasValidOptions) {
         toast.error("All options must have text")
         return
       }
-      
+
       if (!hasCorrectAnswer) {
         toast.error("At least one option must be marked as correct")
         return
       }
     }
 
-    if (form.question_type !== "mcq" && !form.text_answer.correct_answer.trim()) {
+    if (isTextAnswer && !form.text_answer.correct_answer.trim()) {
       toast.error("Correct answer is required")
       return
     }
@@ -146,43 +291,44 @@ export function QuestionDialog({
         explanation: form.explanation?.trim() || null,
         tags: form.tags,
         question_image_url: form.question_image_url || null,
-        ...(form.question_type === "mcq" ? {
-          options: form.options.map((option, index) => ({
-            option_text: option.option_text.trim(),
-            is_correct: option.is_correct,
-            order_index: index,
-            explanation: option.explanation?.trim() || null,
-          }))
-        } : {
-          text_answer: {
-            correct_answer: form.text_answer.correct_answer.trim(),
-            case_sensitive: form.text_answer.case_sensitive,
-            exact_match: form.text_answer.exact_match,
-            alternate_answers: form.text_answer.alternate_answers,
-            keywords: form.text_answer.keywords,
-          }
-        })
+        ...(isMultipleChoice
+          ? {
+              options: form.options.map((option, index) => ({
+                option_text: option.option_text.trim(),
+                is_correct: option.is_correct,
+                order_index: index,
+                explanation: option.explanation?.trim() || null,
+              })),
+            }
+          : isTextAnswer
+            ? {
+                text_answer: {
+                  correct_answer: form.text_answer.correct_answer.trim(),
+                  case_sensitive: form.text_answer.case_sensitive,
+                  exact_match: form.text_answer.exact_match,
+                  alternate_answers: form.text_answer.alternate_answers,
+                  keywords: form.text_answer.keywords,
+                },
+              }
+            : {}),
       }
 
-      await onSave(payload)
+      await onSave(
+        editingQuestion ? { ...payload, id: editingQuestion.id } : payload
+      )
       resetForm()
       onOpenChange(false)
     } catch (error) {
-      console.error('Save question error:', error)
+      console.error("Save question error:", error)
+      toast.error(editingQuestion ? "Failed to update question" : "Failed to create question")
     } finally {
       setSaving(false)
     }
   }
 
-  const resetForm = () => {
-    setForm(createEmptyQuestionForm())
-    setTagsInput("")
-    setAlternateAnswersInput("")
-    setKeywordsInput("")
-  }
-
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
+    const input = event.target
+    const file = input.files?.[0]
     if (!file) return
 
     if (!file.type.startsWith('image/')) {
@@ -194,6 +340,14 @@ export function QuestionDialog({
       toast.error("Image size must be less than 5MB")
       return
     }
+
+    const objectUrl = URL.createObjectURL(file)
+    setImagePreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) {
+        URL.revokeObjectURL(prev)
+      }
+      return objectUrl
+    })
 
     setUploading(true)
     try {
@@ -213,10 +367,18 @@ export function QuestionDialog({
     } catch (error) {
       console.error('Upload error:', error)
       toast.error("Failed to upload image")
+      setImagePreviewUrl((prev) => {
+        if (prev?.startsWith("blob:")) {
+          URL.revokeObjectURL(prev)
+        }
+        return null
+      })
     } finally {
       setUploading(false)
+      input.value = ""
     }
   }
+
 
   const addOption = () => {
     if (form.options.length >= 6) return
@@ -307,15 +469,19 @@ export function QuestionDialog({
                   <Label htmlFor="question_type">Question Type *</Label>
                   <Select
                     value={form.question_type}
-                    onValueChange={(value: any) => setForm(prev => ({ ...prev, question_type: value }))}
+                    onValueChange={(value: SupportedQuestionType) =>
+                      setForm(prev => ({ ...prev, question_type: value }))
+                    }
                   >
                     <SelectTrigger>
-                      <SelectValue />
+                      <SelectValue placeholder="Select a question type" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="mcq">Multiple Choice</SelectItem>
-                      <SelectItem value="short_text">Short Text</SelectItem>
-                      <SelectItem value="fill_blank">Fill in Blanks</SelectItem>
+                      {QUESTION_TYPE_OPTIONS.map(({ value, label }) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -422,7 +588,7 @@ export function QuestionDialog({
                   value={tagsInput}
                   onChange={(e) => handleTagsChange(e.target.value)}
                 />
-                {form.tags.length > 0 && (
+                {form.tags.length > 0 ? (
                   <div className="flex flex-wrap gap-1">
                     {form.tags.map((tag, index) => (
                       <Badge key={index} variant="secondary" className="text-xs">
@@ -430,7 +596,7 @@ export function QuestionDialog({
                       </Badge>
                     ))}
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
 
@@ -462,22 +628,30 @@ export function QuestionDialog({
                     {uploading ? "Uploading..." : "Upload Image"}
                   </Button>
                   
-                  {form.question_image_url && (
+                  {(imagePreviewUrl || form.question_image_url) && (
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      onClick={() => setForm(prev => ({ ...prev, question_image_url: null }))}
+                      onClick={() => {
+                        setForm(prev => ({ ...prev, question_image_url: null }))
+                        setImagePreviewUrl((prev) => {
+                          if (prev?.startsWith("blob:")) {
+                            URL.revokeObjectURL(prev)
+                          }
+                          return null
+                        })
+                      }}
                     >
                       <X className="h-4 w-4" />
                     </Button>
                   )}
                 </div>
                 
-                {form.question_image_url && (
+                {(imagePreviewUrl || form.question_image_url) && (
                   <div className="mt-2">
                     <img
-                      src={form.question_image_url}
+                      src={imagePreviewUrl || form.question_image_url || undefined}
                       alt="Question"
                       className="max-w-full h-40 object-contain rounded-md border"
                     />
@@ -490,7 +664,7 @@ export function QuestionDialog({
             <div className="space-y-4">
               <h3 className="text-lg font-semibold">Answer Configuration</h3>
               
-              {form.question_type === "mcq" ? (
+              {isMultipleChoice ? (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <Label>Answer Options</Label>
@@ -547,7 +721,7 @@ export function QuestionDialog({
                     ))}
                   </div>
                 </div>
-              ) : (
+              ) : isTextAnswer && (
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="correct_answer">Correct Answer *</Label>
@@ -631,18 +805,18 @@ export function QuestionDialog({
                 </div>
               </div>
 
-              {form.question_image_url && (
+              {(imagePreviewUrl || form.question_image_url) && (
                 <div>
                   <div className="font-medium text-sm text-muted-foreground mb-2">Image</div>
                   <img
-                    src={form.question_image_url}
+                    src={imagePreviewUrl || form.question_image_url || undefined}
                     alt="Preview"
                     className="w-full max-h-32 object-contain rounded border"
                   />
                 </div>
               )}
 
-              {form.question_type === "mcq" && (
+              {isMultipleChoice && (
                 <div>
                   <div className="font-medium text-sm text-muted-foreground mb-2">Options</div>
                   <div className="space-y-1">
@@ -695,4 +869,5 @@ export function QuestionDialog({
     </Dialog>
   )
 }
+
 

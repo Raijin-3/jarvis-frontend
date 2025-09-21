@@ -13,6 +13,9 @@ import { LeaderboardWidget } from './leaderboard-widget';
 import { StreakTracker } from './streak-tracker';
 import { PointsDisplay } from './points-display';
 import { InsightsWidget } from './insights-widget';
+import { DynamicChallengeWidget } from './dynamic-challenge-widget';
+import { EnhancedGamificationDashboard } from './enhanced-gamification-dashboard';
+import { MicroRewardsSystem } from './micro-rewards-system';
 import { Trophy, Target, Award, Bell, TrendingUp, Flame, BarChart3 } from 'lucide-react';
 
 interface GamificationDashboardProps {
@@ -60,6 +63,9 @@ export function GamificationDashboard({ onContinueLearning }: GamificationDashbo
 
   return (
     <div className="space-y-6">
+      {/* Enhanced Dynamic Elements */}
+      <MicroRewardsSystem />
+      
       {/* Main Gamification Strip */}
       <GamificationStrip onContinueLearning={onContinueLearning} />
 
@@ -101,8 +107,9 @@ export function GamificationDashboard({ onContinueLearning }: GamificationDashbo
 
       {/* Main Content Tabs */}
       <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-7">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="dynamic">Dynamic</TabsTrigger>
           <TabsTrigger value="challenges">
             Challenges
             {dailyChallenges.length > 0 && (
@@ -136,6 +143,19 @@ export function GamificationDashboard({ onContinueLearning }: GamificationDashbo
             <div className="space-y-6">
               <InsightsWidget insights={insights} />
               <AchievementGrid achievements={achievements} maxItems={3} />
+              <LeaderboardWidget />
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="dynamic" className="space-y-6">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-6">
+              <DynamicChallengeWidget />
+              <EnhancedGamificationDashboard />
+            </div>
+            <div className="space-y-6">
+              <InsightsWidget insights={insights} />
               <LeaderboardWidget />
             </div>
           </div>

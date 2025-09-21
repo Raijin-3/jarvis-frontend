@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, User, Settings, LogOut, Home, BookOpen } from "lucide-react"
+import { Bell, User, Settings, LogOut, Home, BookOpen, Target } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -119,6 +119,12 @@ export function UserNav({ name, email, imageUrl, minimal = false }: Props) {
                   <Link href="/learning-path" className="flex items-center cursor-pointer">
                     <BookOpen className="mr-2 h-4 w-4" />
                     <span>Learning Path</span>
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/learning-path-orchestrator" className="flex items-center cursor-pointer">
+                    <Target className="mr-2 h-4 w-4" />
+                    <span>Path Orchestrator</span>
                   </Link>
                 </DropdownMenuItem>
               </>

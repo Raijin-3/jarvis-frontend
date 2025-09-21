@@ -12,7 +12,8 @@ import {
   Calendar,
   FileText,
   GraduationCap,
-  Shield
+  Shield,
+  Target
 } from "lucide-react"
 
 export const metadata = { title: "Admin Dashboard | Jarvis" }
@@ -46,6 +47,7 @@ export default async function AdminPage() {
   const quickActions = [
     { title: "Course Management", description: "Create and edit courses", icon: BookOpen, href: "/admin/courses", color: "from-blue-500 to-cyan-500" },
     { title: "User Management", description: "Manage learners and instructors", icon: Users, href: "/admin/users", color: "from-purple-500 to-pink-500" },
+    { title: "Course Assignments", description: "Assign courses to students", icon: Target, href: "/admin/course-assignments", color: "from-green-500 to-emerald-500" },
     { title: "Assessment Management", description: "Manage questions and assessments", icon: FileText, href: "/admin/assessments", color: "from-indigo-500 to-purple-500" },
     { title: "Analytics", description: "View platform insights", icon: BarChart3, href: "/admin/analytics", color: "from-emerald-500 to-teal-500" },
     { title: "Settings", description: "System configuration", icon: Settings, href: "/admin/settings", color: "from-orange-500 to-red-500" }

@@ -12,7 +12,23 @@ type Id = string;
 
 type Lecture = { title: string; content: string; duration?: number };
 type Quiz = { id: Id; title: string; questions?: Question[]; completed?: boolean; totalQuestions?: number } | null;
-type Practice = { id: Id; title: string; content?: string; deleted?: boolean; difficulty?: "easy" | "medium" | "hard" };
+type ExerciseType = 'sql' | 'python' | 'excel' | 'analysis' | 'notebook' | 'coding' | 'other';
+
+type ExerciseDetails = {
+  instructions: string;
+  exerciseType: ExerciseType;
+  starterCode?: string;
+  expectedOutput?: string;
+  solutionOutline?: string;
+  datasetUrl?: string;
+  evaluationCriteria?: string;
+  hints?: string | string[];
+  resources?: string[];
+  difficulty?: string;
+  version?: number;
+};
+
+type Practice = { id: Id; title: string; content?: string | null; deleted?: boolean; difficulty?: 'easy' | 'medium' | 'hard'; details?: ExerciseDetails };
 type Question = {
   id: Id;
   text: string;
@@ -88,9 +104,131 @@ function normalizeCourseFull(input: any): CourseFull {
     difficulty: c.difficulty ?? "beginner",
     duration: c.duration ?? 0,
     category: c.category ?? "General",
-    subjects: Array.isArray(c.subjects) ? c.subjects : [],
+    subjects: Array.isArray(c.subjects)
+      ? c.subjects.map((subject: any) => ({
+          ...subject,
+          modules: Array.isArray(subject.modules)
+            ? subject.modules.map((module: any) => ({
+                ...module,
+                sections: Array.isArray(module.sections)
+                  ? module.sections.map((section: any) => ({
+                      ...section,
+                      practices: Array.isArray(section.practices)
+                        ? section.practices.map((practice: any) => ({
+                            ...practice,
+                            details: parsePracticeDetails(
+                              practice?.details ?? practice?.content,
+                            ),
+                          }))
+                        : [],
+                    }))
+                  : [],
+              }))
+            : [],
+        }))
+      : [],
   };
 }
+
+const EXERCISE_TYPE_OPTIONS: ExerciseType[] = ['sql', 'python', 'excel', 'analysis', 'notebook', 'coding', 'other'];
+
+function normalizeExerciseType(value?: string | null): ExerciseType {
+  if (!value) return 'coding';
+  const normalized = value.toString().trim().toLowerCase();
+  if ((EXERCISE_TYPE_OPTIONS as string[]).includes(normalized)) {
+    return normalized as ExerciseType;
+  }
+  if (normalized === 'pandas' || normalized === 'data-analysis' || normalized === 'data') {
+    return 'analysis';
+  }
+  if (normalized === 'spreadsheet') return 'excel';
+  if (normalized === 'sql-query') return 'sql';
+  if (normalized === 'py' || normalized === 'python3') return 'python';
+  return 'coding';
+}
+
+function splitCommaSeparated(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function parsePracticeDetails(raw: any): ExerciseDetails {
+  const optional = (input?: string | null) => {
+    if (typeof input !== 'string') return undefined;
+    const trimmed = input.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const listFrom = (input: any): string[] | undefined => {
+    if (Array.isArray(input)) {
+      const list = input
+        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+        .filter((item) => item.length > 0);
+      return list.length ? list : undefined;
+    }
+    if (typeof input === 'string') {
+      const list = splitCommaSeparated(input);
+      return list.length ? list : undefined;
+    }
+    return undefined;
+  };
+
+  if (!raw) {
+    return { instructions: '', exerciseType: 'coding' };
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { instructions: '', exerciseType: 'coding' };
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        const instructions = optional(parsed.instructions) ?? trimmed;
+        return {
+          instructions,
+          exerciseType: normalizeExerciseType(parsed.exerciseType),
+          starterCode: optional(parsed.starterCode ?? parsed.codeTemplate),
+          expectedOutput: optional(parsed.expectedOutput),
+          solutionOutline: optional(parsed.solutionOutline ?? parsed.solution),
+          datasetUrl: optional(parsed.datasetUrl),
+          evaluationCriteria: optional(parsed.evaluationCriteria),
+          hints: listFrom(parsed.hints) ?? optional(parsed.hints),
+          resources: listFrom(parsed.resources),
+          difficulty: optional(parsed.difficulty),
+          version: typeof parsed.version === 'number' ? parsed.version : 1,
+        };
+      }
+    } catch {
+      // leave fallback below
+    }
+    return { instructions: trimmed, exerciseType: 'coding' };
+  }
+
+  if (typeof raw === 'object') {
+    const instructions = optional(raw.instructions) ?? '';
+    return {
+      instructions,
+      exerciseType: normalizeExerciseType(raw.exerciseType),
+      starterCode: optional(raw.starterCode ?? raw.codeTemplate),
+      expectedOutput: optional(raw.expectedOutput),
+      solutionOutline: optional(raw.solutionOutline ?? raw.solution),
+      datasetUrl: optional(raw.datasetUrl),
+      evaluationCriteria: optional(raw.evaluationCriteria),
+      hints: listFrom(raw.hints) ?? optional(raw.hints),
+      resources: listFrom(raw.resources),
+      difficulty: optional(raw.difficulty),
+      version: typeof raw.version === 'number' ? raw.version : 1,
+    };
+  }
+
+  return { instructions: '', exerciseType: 'coding' };
+}
+
 
 const statusColors = {
   draft: "bg-gray-100 text-gray-800",

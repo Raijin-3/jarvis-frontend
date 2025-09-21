@@ -55,6 +55,7 @@ interface AssessmentQuestion {
   question_text: string
   question_type: string
   module_id?: string | null
+  category_id?: string | null
   module?: AssessmentModule | null
   difficulty_level: "easy" | "medium" | "hard"
   points_value: number
@@ -117,6 +118,8 @@ export function EnhancedAssessmentManagement() {
     pages: 1
   })
   const [dialogs, setDialogs] = useState({ question: false })
+  const [editingQuestion, setEditingQuestion] = useState<AssessmentQuestion | null>(null)
+  const [editingQuestionLoading, setEditingQuestionLoading] = useState(false)
 
   const getModuleLabel = useCallback((module?: AssessmentModule | null) => {
     if (!module) return "-"
@@ -188,19 +191,58 @@ export function EnhancedAssessmentManagement() {
     }
   }, [filters.difficulty, filters.search, filters.module, filters.type, pagination.limit, pagination.page])
 
+  const openCreateQuestionDialog = () => {
+    setEditingQuestion(null)
+    setDialogs(prev => ({ ...prev, question: true }))
+  }
+
+  const handleQuestionDialogOpenChange = (open: boolean) => {
+    setDialogs(prev => ({ ...prev, question: open }))
+    if (!open) {
+      setEditingQuestion(null)
+    }
+  }
+
+  const handleEditQuestion = async (questionId: string) => {
+    try {
+      setEditingQuestionLoading(true)
+      const response = await fetch(`/api/admin/assessments/questions/${questionId}`)
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(errorText || "Failed to load question")
+      }
+      const data = await response.json()
+      setEditingQuestion(data)
+      setDialogs(prev => ({ ...prev, question: true }))
+    } catch (error) {
+      console.error("Edit question load error:", error)
+      toast.error("Failed to load question for editing")
+    } finally {
+      setEditingQuestionLoading(false)
+    }
+  }
+
   const saveQuestion = async (questionData: any) => {
-    const response = await fetch("/api/admin/assessments/questions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(questionData)
-    })
+    const { id, ...payload } = questionData
+    const isEditing = Boolean(id)
+
+    const response = await fetch(
+      isEditing
+        ? `/api/admin/assessments/questions/${id}`
+        : "/api/admin/assessments/questions",
+      {
+        method: isEditing ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }
+    )
 
     if (!response.ok) {
       const error = await response.text()
       throw new Error(error)
     }
 
-    toast.success("Question created successfully")
+    toast.success(isEditing ? "Question updated successfully" : "Question created successfully")
     await loadQuestions()
   }
 
@@ -236,7 +278,7 @@ export function EnhancedAssessmentManagement() {
             <Download className="h-4 w-4 mr-2" />
             Export
           </Button>
-          <Button onClick={() => setDialogs(prev => ({ ...prev, question: true }))}>
+          <Button onClick={openCreateQuestionDialog}>
             <Plus className="h-4 w-4 mr-2" />
             Add Question
           </Button>
@@ -309,7 +351,7 @@ export function EnhancedAssessmentManagement() {
               <Brain className="h-12 w-12 text-muted-foreground/40 mb-4" />
               <h3 className="text-lg font-medium text-muted-foreground mb-2">No questions yet</h3>
               <p className="text-muted-foreground mb-4">Create your first assessment question to get started.</p>
-              <Button onClick={() => setDialogs(prev => ({ ...prev, question: true }))}>
+              <Button onClick={openCreateQuestionDialog}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Question
               </Button>
@@ -394,6 +436,13 @@ export function EnhancedAssessmentManagement() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onSelect={() => handleEditQuestion(question.id)}
+                              disabled={editingQuestionLoading}
+                            >
+                              <Edit className="h-4 w-4 mr-2" />
+                              Edit
+                            </DropdownMenuItem>
                             <DropdownMenuItem className="text-red-600">
                               <Trash2 className="h-4 w-4 mr-2" />
                               Delete
@@ -511,9 +560,10 @@ export function EnhancedAssessmentManagement() {
 
       <QuestionDialog
         open={dialogs.question}
-        onOpenChange={(open) => setDialogs(prev => ({ ...prev, question: open }))}
+        onOpenChange={handleQuestionDialogOpenChange}
         modules={modules}
         categories={categories}
+        editingQuestion={editingQuestion}
         onSave={saveQuestion}
       />
     </div>
