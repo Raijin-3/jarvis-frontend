@@ -64,7 +64,7 @@ import { Textarea } from '@/components/ui/textarea'
 // Form validation schemas
 const assignCourseSchema = z.object({
   user_id: z.string().min(1, 'Please select a student'),
-  course_id: z.string().min(1, 'Please select a course'),
+  course_ids: z.array(z.string()).min(1, 'Please select at least one course'),
   due_date: z.string().optional(),
   notes: z.string().optional(),
 })
@@ -158,6 +158,7 @@ export function CourseAssignmentManagementClient() {
   const [isAssignDialogOpen, setIsAssignDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [selectedAssignment, setSelectedAssignment] = useState<CourseAssignment | null>(null)
+  const [selectedCourses, setSelectedCourses] = useState<string[]>([])
 
   const {
     register: registerAssign,
@@ -258,6 +259,12 @@ export function CourseAssignmentManagementClient() {
     loadData()
   }, [currentPage, searchQuery, statusFilter])
 
+  // Update form when dialog opens/closes or courses load
+  useEffect(() => {
+    if (!isAssignDialogOpen || !courses.length) return
+    setAssignValue('course_ids', selectedCourses)
+  }, [isAssignDialogOpen, selectedCourses, courses, setAssignValue])
+
   // Search handler
   const handleSearch = (query: string) => {
     setSearchQuery(query)
@@ -284,7 +291,7 @@ export function CourseAssignmentManagementClient() {
         throw new Error(error)
       }
 
-      toast.success('Course assigned successfully')
+      toast.success('Courses assigned successfully')
       setIsAssignDialogOpen(false)
       resetAssign()
       await fetchAssignments(currentPage, searchQuery, statusFilter)
@@ -439,27 +446,40 @@ export function CourseAssignmentManagementClient() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="course_id">Course</Label>
+                        <Label>Courses</Label>
                         <Controller
-                          name="course_id"
+                          name="course_ids"
                           control={controlAssign}
                           render={({ field }) => (
-                            <Select value={field.value} onValueChange={field.onChange}>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select a course" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {courses.map((course) => (
-                                  <SelectItem key={course.id} value={course.id}>
+                            <div className="border rounded-md p-3 max-h-48 overflow-y-auto">
+                              {courses.map((course) => (
+                                <div key={course.id} className="flex items-center space-x-2">
+                                  <input
+                                    type="checkbox"
+                                    id={`course-${course.id}`}
+                                    checked={field.value?.includes(course.id)}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      const newValue = checked
+                                        ? [...(field.value || []), course.id]
+                                        : (field.value || []).filter(id => id !== course.id);
+                                      field.onChange(newValue);
+                                    }}
+                                    className="rounded border-gray-300 text-indigo-600 shadow-sm focus:ring-indigo-500"
+                                  />
+                                  <label
+                                    htmlFor={`course-${course.id}`}
+                                    className="text-sm cursor-pointer"
+                                  >
                                     {course.title}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                                  </label>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         />
-                        {assignErrors.course_id && (
-                          <p className="text-sm text-red-600">{assignErrors.course_id.message}</p>
+                        {assignErrors.course_ids && (
+                          <p className="text-sm text-red-600">{assignErrors.course_ids.message}</p>
                         )}
                       </div>
 

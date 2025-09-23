@@ -7,18 +7,21 @@ import { MobileSidebar } from "../dashboard/mobile-sidebar";
 
 export const metadata = { title: "Learning Path - Jarvis" };
 
-export default async function LearningPathPage({ 
-  searchParams 
-}: { 
-  searchParams?: { [key: string]: string | string[] | undefined } 
+export default async function LearningPathPage({
+  searchParams
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
   const sb = supabaseServer();
   const { data: { user } } = await sb.auth.getUser();
   if (!user) redirect("/login");
 
+  // Await searchParams in Next.js 15
+  const resolvedSearchParams = await searchParams;
+
   // Check if this is first time (from assessment)
   const isFirstTime = (() => {
-    const v = searchParams?.first;
+    const v = resolvedSearchParams?.first;
     const s = Array.isArray(v) ? v[0] : v;
     return s === "1" || (s ?? "").toLowerCase() === "true";
   })();

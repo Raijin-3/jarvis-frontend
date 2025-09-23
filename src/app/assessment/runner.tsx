@@ -116,6 +116,7 @@ export function AssessmentRunner() {
   const setAnswer = (qid: string, val: string | null) => {
     setAnswers((a) => ({ ...a, [qid]: val }));
   };
+  // console.log(setAnswer);
   const handleNext = () => {
     if (!data) return;
     if (idx + 1 < data.questions.length) setIdx(idx + 1);
@@ -124,6 +125,7 @@ export function AssessmentRunner() {
   const handleSkip = () => {
     if (!data) return;
     const q = data.questions[idx];
+    console.log(q);
     setAnswer(q.id, null);
     handleNext();
   };
@@ -149,8 +151,10 @@ export function AssessmentRunner() {
       const responses = data.questions.map((q, i) => ({
         q_index: i,
         question_id: q.id,
-        answer: answers[q.id] ?? null,
+        answer: answers[q.id] ?? null
       }));
+
+      console.log("Submitting assessment responses:", responses);
       const res = await fetch("/api/assessment/finish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -162,6 +166,19 @@ export function AssessmentRunner() {
       toast.success(
         `Completed: ${summary.correct}/${summary.total} (${summary.score}%)`,
       );
+
+      // Refresh user's learning paths based on new assessment results
+      try {
+        await fetch("/api/learning-paths/user/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        console.log("Learning paths refreshed with new assessment data");
+      } catch (refreshError) {
+        console.warn("Failed to refresh learning paths:", refreshError);
+        // Don't block the flow if refresh fails
+      }
+
       // Check if this is first assessment by looking for ?first=1 in URL
       const isFirstAssessment = window.location.search.includes("first=1");
       if (isFirstAssessment) {

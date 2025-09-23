@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Bell, User, Settings, LogOut, Home, BookOpen, Target } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -20,11 +20,31 @@ type Props = {
 export function UserNav({ name, email, imageUrl, minimal = false }: Props) {
   const router = useRouter()
   const sb = supabaseBrowser()
+  const [userRole, setUserRole] = useState<string>("student") // default to student
 
   const initial = useMemo(() => {
     const n = (name || email || "?").trim()
     return n.charAt(0).toUpperCase()
   }, [name, email])
+
+  // Fetch user role from API
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/user/summary', { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json().catch(() => null)
+        if (!data || cancelled) return
+        if (typeof data.role === 'string') {
+          setUserRole(data.role)
+        }
+      } catch (error) {
+        console.warn("Could not fetch user role:", error)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   const sampleNotifs = useMemo(
     () => [
@@ -115,18 +135,23 @@ export function UserNav({ name, email, imageUrl, minimal = false }: Props) {
                     <span>Dashboard</span>
                   </Link>
                 </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link href="/learning-path" className="flex items-center cursor-pointer">
-                    <BookOpen className="mr-2 h-4 w-4" />
-                    <span>Learning Path</span>
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link href="/learning-path-orchestrator" className="flex items-center cursor-pointer">
-                    <Target className="mr-2 h-4 w-4" />
-                    <span>Path Orchestrator</span>
-                  </Link>
-                </DropdownMenuItem>
+                {/* Only show Learning Path for non-admin users */}
+                {userRole !== "admin" && (
+                  <>
+                    <DropdownMenuItem asChild>
+                      <Link href="/learning-path" className="flex items-center cursor-pointer">
+                        <BookOpen className="mr-2 h-4 w-4" />
+                        <span>Learning Path</span>
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/learning-path-orchestrator" className="flex items-center cursor-pointer">
+                        <Target className="mr-2 h-4 w-4" />
+                        <span>Path Orchestrator</span>
+                      </Link>
+                    </DropdownMenuItem>
+                  </>
+                )}
               </>
             )}
             <DropdownMenuItem asChild>

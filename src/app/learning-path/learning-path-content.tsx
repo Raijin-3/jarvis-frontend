@@ -1,659 +1,679 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "@/lib/toast";
-import { useRouter } from "next/navigation";
-import { 
-  Trophy, 
-  Clock, 
-  Users, 
-  Star, 
-  CheckCircle2, 
-  Circle, 
-  ArrowRight, 
-  BookOpen, 
-  Code, 
-  FileCheck, 
-  Award,
-  Sparkles,
-  TrendingUp,
-  Target,
-  Play,
-  ChevronRight,
-  Lightbulb
-} from "lucide-react";
+import { Star, Trophy, Lock, Package2, CheckCircle, ArrowDown, Zap, BookOpen } from "lucide-react";
 
-interface LearningPath {
-  id: string;
-  title: string;
-  description: string;
-  career_goal: string;
-  difficulty_level: string;
-  estimated_duration_weeks: number;
-  icon: string;
-  color: string;
-  steps: LearningPathStep[];
-}
-
-interface LearningPathStep {
-  id: string;
-  title: string;
-  description: string;
-  step_type: string;
-  order_index: number;
-  estimated_hours: number;
-  skills: string[];
-  prerequisites: string[];
-  is_required: boolean;
-  course_structure?: CourseStructure;
-}
-
-interface CourseStructure {
-  courses: Course[];
-}
-
-interface Course {
-  id: string;
-  title: string;
-  description?: string;
-  subjects: Subject[];
-}
-
-interface Subject {
-  id: string;
-  title: string;
-  course_id: string;
-  order_index?: number;
-  modules: LearningModule[];
-}
-
-interface LearningModule {
-  id: string;
-  title: string;
-  subject_id: string;
-  order_index?: number;
-  is_mandatory: boolean;
-  assessment_based: boolean;
-  sections: ModuleSection[];
-}
-
-interface ModuleSection {
-  id: string;
-  title: string;
-  module_id: string;
-  order_index?: number;
-}
-
-const getCourseBadgeLabel = (title: string | undefined, index: number): string => {
-  if (!title) {
-    return `C${index + 1}`;
-  }
-
-  const parts = title.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) {
-    return `C${index + 1}`;
-  }
-
-  if (parts.length === 1) {
-    return parts[0].slice(0, 2).toUpperCase();
-  }
-
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-};
-
-const hasCourseStructure = (
-  step: LearningPathStep
-): step is LearningPathStep & { course_structure: CourseStructure } =>
-  Boolean(step.course_structure && step.course_structure.courses?.length);
-
-interface UserProgress {
-  learning_path_id: string;
-  progress_percentage: number;
-  completed_steps: string[];
-}
-
+// Keep the same props signature to avoid touching page.tsx
 export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boolean; profile: any }) {
-  const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [recommendedPath, setRecommendedPath] = useState<LearningPath | null>(null);
-  const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
-  const [enrolling, setEnrolling] = useState(false);
-  const courseStructureSteps = recommendedPath?.steps?.filter(hasCourseStructure) ?? [];
+  const [modules, setModules] = useState<ModuleWithMandatory[]>([]);
+  const [pathNodes, setPathNodes] = useState<PathNode[]>([]);
+  const [query, setQuery] = useState("");
+  const [visibleNodes, setVisibleNodes] = useState(6); // Show first 6 nodes initially
+  const [animatedNodes, setAnimatedNodes] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    loadRecommendedPath();
+    loadLearningPathModules();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadRecommendedPath = async () => {
-    try {
-      // Get recommended path based on user profile
-      const res = await fetch("/api/learning-paths/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          career_goals: profile?.career_goals || profile?.reason_for_learning,
-          focus_areas: profile?.focus_areas || [],
-          experience_level: profile?.experience_level
-        }),
+  // Animate nodes in sequence after data loads
+  useEffect(() => {
+    if (pathNodes.length > 0 && !loading) {
+      const timer = setTimeout(() => {
+        pathNodes.slice(0, visibleNodes).forEach((node, index) => {
+          setTimeout(() => {
+            setAnimatedNodes(prev => new Set([...prev, node.id]));
+          }, index * 200); // Stagger animations by 200ms
+        });
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [pathNodes, visibleNodes, loading]);
+
+  // Find the current node (next node to work on)
+  const findCurrentNode = (nodes: PathNode[]): PathNode | null => {
+    // Find the first node that is not locked and not completed
+    return nodes.find(node => !node.locked && !node.completed) || null;
+  };
+
+  // Convert modules to path nodes
+  const createPathNodes = (modules: ModuleWithMandatory[]): PathNode[] => {
+    const nodes: PathNode[] = [];
+
+    // Track used IDs to ensure uniqueness across all nodes
+    const usedIds = new Set<string>();
+    const slug = (s?: string) =>
+      (s || "")
+        .toString()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const uniqueId = (base: string) => {
+      let id = base || "node";
+      let i = 1;
+      while (usedIds.has(id)) {
+        id = `${base}-${i++}`;
+      }
+      usedIds.add(id);
+      return id;
+    };
+    
+    // Start node
+    nodes.push({
+      id: uniqueId('start'),
+      type: 'start',
+      title: 'Start Learning',
+      description: 'Begin your journey',
+      completed: false,
+      locked: false
+    });
+
+    // Sort modules by order or by course/subject
+    // const sortedModules = modules.sort((a, b) => {
+    //   if (a.order_index !== undefined && b.order_index !== undefined) {
+    //     return a.order_index - b.order_index;
+    //   }
+    //   return (a.course_title || "").localeCompare(b.course_title || "") || 
+    //          (a.subject_title || "").localeCompare(b.subject_title || "");
+    // });
+
+    // Add module nodes with progressive unlocking logic
+    modules.forEach((module, index) => {
+      const isFirst = index === 0;
+      const previousNode = index > 0 ? nodes[nodes.length - 1] : null;
+      const previousCompleted = isFirst || (previousNode && previousNode.completed);
+      
+      const baseModuleId = `module-${slug(module.course_title)}-${slug(module.subject_title)}-${slug(module.id)}`;
+
+      nodes.push({
+        id: uniqueId(baseModuleId),
+        type: 'module',
+        title: module.title,
+        description: `${module.subject_title} - ${module.course_title}`,
+        completed: module.completed || false,
+        locked: !isFirst && !previousCompleted,
+        progress: module.progress || (module.completed ? 100 : 0),
+        module: module
       });
 
-      if (!res.ok) {
-        const errorText = await res.text().catch(() => "Unknown error");
-        console.error("Learning path recommendation failed:", res.status, errorText);
-        throw new Error(`Failed to get recommendation (${res.status}): ${errorText}`);
-      }
-      
-      const path = await res.json();
-      
-      if (!path || !path.id) {
-        throw new Error("Invalid path data received");
-      }
-      
-      // Get path details with steps
-      const detailsRes = await fetch(`/api/learning-paths/${path.id}`);
-      if (detailsRes.ok) {
-        const pathDetails = await detailsRes.json();
-        setRecommendedPath(pathDetails);
-      } else {
-        console.warn("Failed to load path details, using basic path info");
-        setRecommendedPath(path);
-      }
+      // Add milestone every 3-4 modules
+      // if ((index + 1) % 3 === 0 && index < modules.length - 1) {
+      //   const recentModules = nodes.slice(-3).filter(n => n.type === 'module');
+      //   const milestoneCompleted = recentModules.every(n => n.completed);
+      //   nodes.push({
+      //     id: uniqueId(`milestone-${Math.floor(index / 3)}`),
+      //     type: 'milestone',
+      //     title: 'Milestone Reached',
+      //     description: 'Great progress!',
+      //     completed: milestoneCompleted,
+      //     locked: !milestoneCompleted
+      //   });
+      // }
+    });
 
-      // Check if user is already enrolled
-      try {
-        const progressRes = await fetch("/api/learning-paths/user/progress");
-        if (progressRes.ok) {
-          const progressData = await progressRes.json();
-          const pathProgress = progressData.find((p: any) => p.learning_path_id === path.id);
-          if (pathProgress) {
-            setUserProgress(pathProgress);
-          }
+    // Final completion node
+    nodes.push({
+      id: uniqueId('final'),
+      type: 'final',
+      title: 'Learning Complete',
+      description: 'Congratulations!',
+      completed: modules.every(m => m.completed),
+      locked: !modules.every(m => m.completed)
+    });
+
+    return nodes;
+  };
+
+  const loadLearningPathModules = async () => {
+    try {
+      setLoading(true);
+
+      // Fetch or generate once the user's learning path
+      const userPathRes = await fetch("/api/learning-paths/user/me");
+      if (!userPathRes.ok) {
+        throw new Error("Failed to load your learning path");
+      }
+      const learningPath = await userPathRes.json();
+      console.log(learningPath);
+
+      // Extract modules from the stored path JSON
+      const extractedModules: ModuleWithMandatory[] = [];
+      const courses = learningPath?.path?.path?.courses || learningPath?.path?.courses || [];
+      learningPath.forEach((course: any) => {
+        if (course?.subjects) {
+          course.subjects.forEach((subject: any) => {
+            if (subject?.modules) {
+              subject.modules.forEach((module: any) => {
+                extractedModules.push({
+                  id: module.id,
+                  title: module.title,
+                  subject_title: subject.title,
+                  course_title: course.title,
+                  is_mandatory: true,
+                  assessment_based: true,
+                  status: module.status,
+                  correctness_percentage: module.correctness_percentage,
+                  created_at: module.created_at || '',
+                  updated_at: module.updated_at || ''
+                } as any);
+              });
+            }
+          });
         }
-      } catch (progressError) {
-        console.warn("Failed to load user progress:", progressError);
-        // Don't fail the entire flow if progress loading fails
-      }
+      });
 
+      // Use real progress from user_module_status when present
+      const modulesWithProgress = extractedModules.map((module) => ({
+        ...module,
+        completed: (module as any).correctness_percentage >= 100,
+        progress: Math.max(0, Math.min(100, Number((module as any).correctness_percentage ?? 0)))
+      }));
+
+      setModules(modulesWithProgress);
+      setPathNodes(createPathNodes(modulesWithProgress));
+
+      
+  
     } catch (e: any) {
-      console.error("Full error in loadRecommendedPath:", e);
-      toast.error(e.message || "Failed to load learning path recommendation");
+      console.error("Failed to load learning path modules:", e);
+      toast.error(e?.message || "Failed to load learning path modules");
+      setModules([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const enrollInPath = async () => {
-    if (!recommendedPath) return;
+  
+  // Helper to get node icon (brand-colored for available states)
+  const getNodeIcon = (node: PathNode) => {
+    if (node.locked) {
+      return <Lock className="h-6 w-6 text-gray-400" />;
+    }
     
-    setEnrolling(true);
-    try {
-      const res = await fetch(`/api/learning-paths/${recommendedPath.id}/enroll`, {
-        method: "POST",
-      });
-
-      if (!res.ok) throw new Error("Failed to enroll");
-
-      await toast.promise(
-        Promise.resolve(),
-        {
-          loading: "Enrolling in your learning path...",
-          success: "Welcome to your learning journey! 🎉",
-          error: "Failed to enroll",
-        }
-      );
-
-      // Refresh progress
-      await loadRecommendedPath();
-      
-      if (isFirstTime) {
-        router.replace("/dashboard");
-      }
-
-    } catch (e: any) {
-      toast.error(e.message || "Failed to enroll");
-    } finally {
-      setEnrolling(false);
-    }
-  };
-
-  const getStepIcon = (stepType: string) => {
-    switch (stepType) {
-      case 'project':
-        return <Code className="h-5 w-5" />;
-      case 'assessment':
-        return <FileCheck className="h-5 w-5" />;
+    switch (node.type) {
+      case 'start':
+        return <Star className="h-6 w-6 text-white" />;
       case 'milestone':
-        return <Award className="h-5 w-5" />;
+        return <Package2 className="h-6 w-6 text-gray-600" />;
+      case 'final':
+        return <Trophy className="h-6 w-6 text-gray-600" />;
       default:
-        return <BookOpen className="h-5 w-5" />;
+        return node.completed ? 
+          <CheckCircle className="h-6 w-6 text-white" /> : 
+          <Star className="h-6 w-6 text-[hsl(var(--brand))]" />;
     }
   };
 
-  const getStepColor = (stepType: string) => {
-    switch (stepType) {
-      case 'project':
-        return 'from-purple-500 to-indigo-500';
-      case 'assessment':
-        return 'from-emerald-500 to-teal-500';
-      case 'milestone':
-        return 'from-amber-500 to-orange-500';
-      default:
-        return 'from-blue-500 to-cyan-500';
+  // Helper to get node style
+  const getNodeStyle = (node: PathNode) => {
+    if (node.type === 'start' && !node.locked) {
+      return "bg-[hsl(var(--brand))] border-[hsl(var(--brand))] text-white hover:brightness-110";
+    }
+    if (node.completed) {
+      return "bg-[hsl(var(--brand))] border-[hsl(var(--brand))] text-white";
+    }
+    if (node.locked) {
+      return "bg-muted border-border text-gray-400 cursor-not-allowed";
+    }
+    return "bg-white border-border hover:bg-muted";
+  };
+
+  // Handle node click
+  const handleNodeClick = (node: PathNode) => {
+    if (node.locked) {
+      toast.error("Complete the previous step to unlock this one");
+      return;
+    }
+    
+    if (node.type === 'start') {
+      toast.success("Starting your learning journey!");
+    } else if (node.type === 'module') {
+      toast.success(`Opening ${node.title}...`);
+      // In real app: navigate to module content
+    } else if (node.type === 'milestone') {
+      toast.success("Milestone reached! Great progress!");
+    } else if (node.type === 'final') {
+      toast.success("Congratulations on completing the learning path!");
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Creating your personalized learning path...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!recommendedPath) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-gray-600">Unable to load learning path recommendation.</p>
-        <Button onClick={() => router.replace("/dashboard")} className="mt-4">
-          Go to Dashboard
-        </Button>
-      </div>
-    );
-  }
+  // Load more nodes
+  const handleLoadMore = () => {
+    const newVisibleCount = Math.min(visibleNodes + 6, pathNodes.length);
+    setVisibleNodes(newVisibleCount);
+    
+    // Animate new nodes
+    pathNodes.slice(visibleNodes, newVisibleCount).forEach((node, index) => {
+      setTimeout(() => {
+        setAnimatedNodes(prev => new Set([...prev, node.id]));
+      }, index * 150);
+    });
+  };
 
   return (
-    <div className={`relative min-h-screen ${isFirstTime ? 'bg-gradient-to-br from-indigo-50 via-white to-emerald-50' : ''}`}>
-      {isFirstTime && (
-        <div className="absolute inset-0 bg-[radial-gradient(1200px_800px_at_100%_-20%,rgba(99,102,241,.12),transparent)] opacity-60"></div>
-      )}
-      
-      <div className="relative z-10 max-w-5xl mx-auto p-6 space-y-8">
-        {/* Header */}
-        <div className="text-center space-y-4">
-          {isFirstTime && (
-            <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-indigo-100 to-purple-100 px-4 py-2 text-sm font-medium text-indigo-700">
-              <Sparkles className="h-4 w-4" />
-              Congratulations on completing your assessment!
-            </div>
-          )}
-          
-          <h1 className="text-4xl font-bold text-gray-900">
-            Your Personalized Learning Path
-          </h1>
-          
-          <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-            Based on your assessment and profile, we've crafted a roadmap to help you become a successful{' '}
-            <span className="font-semibold text-indigo-600">
-              {recommendedPath.career_goal?.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()) || 'Professional'}
-            </span>
-          </p>
-        </div>
-
-        {/* Path Overview Card */}
-        <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/80 p-8 backdrop-blur-xl shadow-2xl">
-          <div className="absolute inset-0 bg-gradient-to-br" style={{ background: `linear-gradient(135deg, ${recommendedPath.color || '#4f46e5'}15, ${recommendedPath.color || '#4f46e5'}08)` }}></div>
-          
-          <div className="relative z-10 grid md:grid-cols-2 gap-8 items-center">
-            <div>
-              <div className="flex items-center gap-4 mb-4">
-                <div className="text-4xl">{recommendedPath.icon || '📚'}</div>
-                <div>
-                  <h2 className="text-2xl font-bold text-gray-900">{recommendedPath.title || 'Learning Path'}</h2>
-                  <p className="text-gray-600 capitalize">{recommendedPath.difficulty_level || 'beginner'} Level</p>
-                </div>
-              </div>
-              
-              <p className="text-gray-700 mb-6">{recommendedPath.description || 'Personalized learning path to help you reach your goals.'}</p>
-              
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="flex items-center gap-2">
-                  <Clock className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">{recommendedPath.estimated_duration_weeks || 8} weeks</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Trophy className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">{recommendedPath.steps?.length || 0} steps</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Target className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">
-                    {recommendedPath.steps?.filter(s => s.is_required).length || 0} mandatory
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Star className="h-5 w-5 text-gray-500" />
-                  <span className="text-sm text-gray-700">
-                    {recommendedPath.steps?.filter(s => !s.is_required).length || 0} optional
-                  </span>
-                </div>
-              </div>
-
-              {userProgress ? (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700">Your Progress</span>
-                    <span className="text-sm font-medium text-indigo-600">{userProgress.progress_percentage}%</span>
-                  </div>
-                  <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-500"
-                      style={{ width: `${userProgress.progress_percentage}%` }}
-                    />
-                  </div>
-                  <Button 
-                    onClick={() => router.push('/learning-path')} 
-                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600"
-                  >
-                    Continue Learning <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
-                </div>
-              ) : (
-                <Button 
-                  onClick={enrollInPath}
-                  disabled={enrolling}
-                  className="w-full bg-gradient-to-r from-indigo-600 to-purple-600"
-                >
-                  {enrolling ? (
-                    "Enrolling..."
-                  ) : (
-                    <>
-                      <Play className="mr-2 h-4 w-4" />
-                      Start My Journey
-                    </>
-                  )}
-                </Button>
-              )}
-            </div>
-
-            <div className="hidden md:block">
-              <div className="relative">
-                <div className="absolute inset-0 bg-gradient-to-br from-indigo-200/20 to-purple-200/20 rounded-2xl blur-2xl"></div>
-                <div className="relative bg-white/60 backdrop-blur rounded-2xl p-6">
-                  <h3 className="font-semibold text-gray-900 mb-4">What You'll Learn</h3>
-                  <div className="space-y-3">
-                    {recommendedPath.steps?.slice(0, 4).map((step, idx) => (
-                      <div key={step.id} className="flex items-start gap-3">
-                        <div className={`flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')} text-white text-sm font-medium`}>
-                          {idx + 1}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">{step.title}</p>
-                          <p className="text-xs text-gray-600">{step.estimated_hours}h</p>
-                        </div>
-                      </div>
-                    ))}
-                    {recommendedPath.steps && recommendedPath.steps.length > 4 && (
-                      <div className="text-center pt-2">
-                        <span className="text-xs text-gray-500">
-                          +{recommendedPath.steps.length - 4} more steps
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
+    <div className={`relative ${isFirstTime ? "bg-gradient-to-br from-[hsl(var(--brand))/0.06] via-white to-[hsl(var(--brand-accent))/0.06]" : ""}`}>
+      <div className="max-w-4xl mx-auto p-4 md:p-6 space-y-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="space-y-1">
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-900">Learning Path</h1>
+            <p className="text-sm text-gray-600">Follow the snake path to complete your personalized learning journey. Complete each step to unlock the next.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={loadLearningPathModules} disabled={loading}>
+              {loading ? "Loading..." : "Refresh"}
+            </Button>
           </div>
         </div>
 
-        {/* Course Structure Overview */}
-        {courseStructureSteps.length > 0 && (
-          <div className="space-y-6">
+        {loading ? (
+          <div className="flex items-center justify-center min-h-96">
             <div className="text-center">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Course Structure Overview</h2>
-              <p className="text-gray-600">Organized learning path with mandatory and optional modules based on your assessment results</p>
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600 mx-auto mb-3" />
+              <p className="text-gray-600">Loading your learning path...</p>
             </div>
-
-            <div className="space-y-8">
-              {courseStructureSteps.map((step, stepIndex) => (
-                <div key={step.id} className="space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-xl font-semibold text-gray-900">
-                      {step.title || `Course Group ${stepIndex + 1}`}
-                    </h3>
-                    <div className="text-sm text-gray-500">
-                      Estimated {step.estimated_hours || 0}h - {step.is_required ? 'Mandatory step' : 'Optional step'}
-                    </div>
-                  </div>
-
-                  <div className="bg-white/80 backdrop-blur rounded-xl border border-gray-200 p-6">
-                    <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                      {step.course_structure.courses.map((course, courseIndex) => (
-                        <div key={course.id} className="space-y-4">
-                          <div className="flex items-start gap-3">
-                            <div className="mt-1 flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-r from-blue-500 to-cyan-500 text-sm font-bold text-white">
-                              {getCourseBadgeLabel(course.title, courseIndex)}
-                            </div>
-                            <div className="min-w-0">
-                              <h4 className="font-semibold text-gray-900 truncate">{course.title}</h4>
-                              {course.description && (
-                                <p className="text-xs text-gray-500">{course.description}</p>
+          </div>
+        ) : pathNodes.length === 0 ? (
+          <div className="rounded-lg border p-8 text-center text-gray-600 bg-white/60">
+            No learning path found.
+          </div>
+        ) : (
+          <div className="relative">
+            {/* Animated Learning Path */}
+            <div className="py-12 max-w-5xl mx-auto relative">
+              {/* Dynamic Background Pattern */}
+              <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-br from-[hsl(var(--brand))]/5 to-transparent rounded-full blur-3xl animate-pulse"></div>
+                <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-gradient-to-br from-[hsl(var(--brand-accent))]/5 to-transparent rounded-full blur-2xl animate-pulse delay-1000"></div>
+              </div>
+              
+              {/* Central Learning Path Container */}
+              <div className="relative">
+                {pathNodes.slice(0, visibleNodes).map((node, index) => {
+                  const isVisible = index < visibleNodes;
+                  const isAnimated = animatedNodes.has(node.id);
+                  const isEven = index % 2 === 0;
+                  const isLast = index === pathNodes.length - 1;
+                  const showConnection = !isLast && index < visibleNodes - 1;
+                  const currentNode = findCurrentNode(pathNodes);
+                  const isCurrentNode = currentNode?.id === node.id;
+                  
+                  return (
+                    <div key={node.id} className="relative mb-16">
+                      {/* Animated Connection Path */}
+                      {showConnection && (
+                        <div className="absolute left-1/2 top-20 transform -translate-x-1/2 z-0 pointer-events-none">
+                          <div className={`
+                            w-0.5 h-16 bg-gradient-to-b from-[hsl(var(--brand))]/40 via-[hsl(var(--brand))]/20 to-[hsl(var(--brand-accent))]/40 
+                            transition-all duration-1000 ease-out ${isAnimated ? 'opacity-100 scale-y-100' : 'opacity-0 scale-y-0'}
+                          `}></div>
+                          
+                          {/* Flowing Animation */}
+                          <div className={`
+                            absolute top-0 w-0.5 h-4 bg-gradient-to-b from-[hsl(var(--brand))] to-transparent
+                            animate-pulse ${isAnimated ? 'opacity-60' : 'opacity-0'}
+                          `}></div>
+                          
+                          {/* Connection Dot */}
+                          <div className={`
+                            absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 rounded-full
+                            bg-[hsl(var(--brand-accent))] transition-all duration-500 delay-300
+                            ${isAnimated ? 'opacity-100 scale-100' : 'opacity-0 scale-0'}
+                          `}></div>
+                        </div>
+                      )}
+                      
+                      {/* Centered Content Layout */}
+                      <div className={`
+                        flex items-center justify-center transition-all duration-700 ease-out transform
+                        ${isAnimated ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}
+                      `}>
+                        {/* Left Node (for odd indices) */}
+                        {!isEven && (
+                          <div className="relative flex-shrink-0 mr-6">
+                            <button
+                              onClick={() => handleNodeClick(node)}
+                              disabled={node.locked}
+                              className={`
+                                relative w-20 h-20 rounded-full border-3 transition-all duration-700 group
+                                flex items-center justify-center shadow-xl hover:shadow-2xl
+                                transform hover:scale-110 ${node.locked ? 'cursor-not-allowed' : 'cursor-pointer'}
+                                ${getNodeStyle(node)}
+                                ${isCurrentNode ? 'animate-current-node' : ''}
+                              `}
+                            >
+                              {/* Glow Effect for Active Nodes */}
+                              {!node.locked && (
+                                <div className={`
+                                  absolute inset-0 rounded-full bg-[hsl(var(--brand))]/20 blur-lg transition-opacity duration-300
+                                  ${isCurrentNode ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}
+                                `}></div>
                               )}
-                            </div>
+                              
+                              {/* Enhanced Glow for Current Node */}
+                              {isCurrentNode && (
+                                <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-[hsl(var(--brand))]/30 to-[hsl(var(--brand-accent))]/30 blur-md opacity-70 animate-pulse"></div>
+                              )}
+                              
+                              {/* Node Icon */}
+                              <div className="relative z-10 transition-transform duration-300 group-hover:rotate-12">
+                                {getNodeIcon(node)}
+                              </div>
+                              
+                              {/* Progress Ring for Module Nodes */}
+                              {node.type === 'module' && node.progress !== undefined && node.progress > 0 && (
+                                <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
+                                  <circle
+                                    cx="40"
+                                    cy="40"
+                                    r="36"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    fill="none"
+                                    className="text-gray-200"
+                                  />
+                                  <circle
+                                    cx="40"
+                                    cy="40"
+                                    r="36"
+                                    stroke="hsl(var(--brand))"
+                                    strokeWidth="3"
+                                    fill="none"
+                                    strokeDasharray={`${2 * Math.PI * 36}`}
+                                    strokeDashoffset={`${2 * Math.PI * 36 * (1 - (node.progress || 0) / 100)}`}
+                                    className="transition-all duration-1000 ease-out"
+                                    style={{ filter: 'drop-shadow(0 0 6px hsl(var(--brand)))' }}
+                                  />
+                                </svg>
+                              )}
+                              
+                              {/* Completion Badge */}
+                              {node.completed && (
+                                <div className="absolute -top-1 -right-1 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center shadow-lg">
+                                  <CheckCircle className="w-4 h-4 text-white" />
+                                </div>
+                              )}
+                            </button>
+                            
+                            {/* Floating Animation for Current Node Only */}
+                            {isCurrentNode && (
+                              <div className="absolute -inset-2 bg-[hsl(var(--brand))]/10 rounded-full animate-current-pulse opacity-75"></div>
+                            )}
                           </div>
+                        )}
 
-                          <div className="space-y-4 pl-1">
-                            {course.subjects.map((subject) => (
-                              <div key={subject.id} className="border-l-2 border-blue-200 pl-4">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span className="font-medium text-gray-800">{subject.title}</span>
-                                  <span className="text-xs text-gray-500">
-                                    {subject.modules.length} module{subject.modules.length === 1 ? '' : 's'}
+                        {/* Centered Content Card */}
+                        <div className={`
+                          w-80 bg-white/80 backdrop-blur-sm rounded-xl p-4 shadow-lg border border-gray-200/50
+                          transition-all duration-500 ${isAnimated ? 'opacity-100' : 'opacity-0'}
+                          hover:shadow-xl hover:bg-white/90 group
+                        `}>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <h3 className={`font-semibold text-lg transition-colors duration-200 ${
+                                node.locked ? 'text-gray-400' : 'text-gray-900 group-hover:text-[hsl(var(--brand))]'
+                              }`}>
+                                {node.title}
+                              </h3>
+                              {node.description && (
+                                <p className={`text-sm mt-1 ${node.locked ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  {node.description}
+                                </p>
+                              )}
+                              
+                              {/* Module Status and Progress */}
+                              {node.type === 'module' && (
+                                <div className="mt-2 flex items-center gap-2">
+                                  {node.module?.is_mandatory && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-[hsl(var(--brand))]/10 text-[hsl(var(--brand))] rounded-full">
+                                      <Zap className="w-3 h-3" />
+                                      Mandatory
+                                    </span>
+                                  )}
+                                  {node.progress !== undefined && node.progress > 0 && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full">
+                                      {node.progress}% Complete
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {/* Other Node Types Status */}
+                              {node.type === 'start' && (
+                                <div className="mt-2">
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                                    <BookOpen className="w-3 h-3" />
+                                    Journey Begins
                                   </span>
                                 </div>
-                                {subject.modules.length > 0 ? (
-                                  <div className="mt-2 space-y-2">
-                                    {subject.modules.map((module) => (
-                                      <div
-                                        key={module.id}
-                                        className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm"
-                                      >
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-gray-700">{module.title}</span>
-                                          {module.assessment_based && (
-                                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
-                                              <Lightbulb className="h-3 w-3" />
-                                              Assessment-based
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div
-                                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                                            module.is_mandatory
-                                              ? 'bg-red-100 text-red-700 border border-red-200'
-                                              : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                                          }`}
-                                        >
-                                          {module.is_mandatory ? 'Mandatory' : 'Optional'}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <p className="mt-2 text-xs italic text-gray-500">Modules will be available soon.</p>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
-              <div className="flex items-start gap-3">
-                <Lightbulb className="h-5 w-5 text-amber-600 mt-0.5" />
-                <div>
-                  <h3 className="font-semibold text-amber-900 mb-1">Personalized Learning Path</h3>
-                  <p className="text-sm text-amber-800">
-                    Module requirements are personalized based on your assessment results.
-                    Modules marked as "Optional" indicate areas where you demonstrated proficiency,
-                    while "Mandatory" modules focus on areas that need strengthening.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {recommendedPath.steps && recommendedPath.steps.length > 0 && courseStructureSteps.length === 0 && (
-          <div className="space-y-6">
-            <div className="text-center">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Learning Steps</h2>
-              <p className="text-gray-600">Step-by-step progression through your learning journey</p>
-            </div>
-
-            <div className="bg-white/80 backdrop-blur rounded-xl border border-gray-200 p-6">
-              <div className="space-y-4">
-                {recommendedPath.steps.map((step, index) => (
-                  <div key={step.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className={`flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')} text-white text-sm font-medium`}>
-                        {index + 1}
-                      </div>
-                      <div>
-                        <h4 className="font-medium text-gray-900">{step.title}</h4>
-                        <p className="text-sm text-gray-600">{step.estimated_hours}h estimated</p>
-                      </div>
-                    </div>
-                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${step.is_required ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                      {step.is_required ? 'Mandatory' : 'Optional'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Detailed Roadmap */}
-        {recommendedPath.steps && recommendedPath.steps.length > 0 && (
-          <div className="space-y-6">
-            <div className="text-center">
-              <h2 className="text-3xl font-bold text-gray-900 mb-2">Your Learning Roadmap</h2>
-              <p className="text-gray-600">Follow this step-by-step path to achieve your career goals</p>
-            </div>
-
-            <div className="space-y-4">
-              {recommendedPath.steps.map((step, index) => {
-                const isCompleted = userProgress?.completed_steps?.includes(step.id) || false;
-                const isNext = !isCompleted && userProgress?.completed_steps?.length === index;
-                
-                return (
-                  <div 
-                    key={step.id}
-                    className={`relative group transition-all duration-200 ${
-                      isCompleted 
-                        ? 'opacity-75' 
-                        : isNext 
-                          ? 'ring-2 ring-indigo-500 ring-offset-2' 
-                          : ''
-                    }`}
-                  >
-                    <div className="flex items-start gap-6 p-6 bg-white/80 backdrop-blur rounded-xl border border-gray-200 hover:shadow-lg transition-all duration-200">
-                      {/* Step Number & Icon */}
-                      <div className="flex-shrink-0 relative">
-                        <div className={`flex items-center justify-center w-12 h-12 rounded-xl ${
-                          isCompleted 
-                            ? 'bg-green-100 text-green-600' 
-                            : isNext
-                              ? `bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')} text-white`
-                              : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {isCompleted ? (
-                            <CheckCircle2 className="h-6 w-6" />
-                          ) : (
-                            <span className="font-bold">{index + 1}</span>
-                          )}
-                        </div>
-                        
-                        {/* Connection Line */}
-                        {index < recommendedPath.steps.length - 1 && (
-                          <div className="absolute top-12 left-1/2 w-px h-8 bg-gray-300 -translate-x-px"></div>
-                        )}
-                      </div>
-
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-4 mb-3">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <h3 className="text-lg font-semibold text-gray-900">{step.title}</h3>
-                              <div className={`flex items-center justify-center w-6 h-6 rounded-lg bg-gradient-to-r ${getStepColor(step.step_type || 'lesson')}`}>
-                                {getStepIcon(step.step_type || 'lesson')}
-                              </div>
-                              {/* Mandatory/Optional Badge */}
-                              <div className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                                step.is_required 
-                                  ? 'bg-red-100 text-red-700 border border-red-200' 
-                                  : 'bg-blue-100 text-blue-700 border border-blue-200'
-                              }`}>
-                                {step.is_required ? 'MANDATORY' : 'OPTIONAL'}
-                              </div>
+                              )}
+                              {node.type === 'final' && (
+                                <div className="mt-2">
+                                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full">
+                                    <Trophy className="w-3 h-3" />
+                                    Final Goal
+                                  </span>
+                                </div>
+                              )}
                             </div>
-                            <p className="text-gray-600 text-sm leading-relaxed">{step.description}</p>
-                          </div>
-                          
-                          <div className="text-right flex-shrink-0">
-                            <div className="text-sm font-medium text-gray-900">{step.estimated_hours || 0}h</div>
-                            <div className="text-xs text-gray-500 capitalize">{step.step_type?.replace('_', ' ') || 'lesson'}</div>
+                            {/* Action Icon */}
+                            <div className="ml-3 flex-shrink-0">
+                              <ArrowDown className={`w-5 h-5 transition-colors duration-200 ${
+                                node.locked ? 'text-gray-400' : 'text-[hsl(var(--brand))] group-hover:text-[hsl(var(--brand-accent))]'
+                              }`} />
+                            </div>
                           </div>
                         </div>
 
-                        {/* Skills */}
-                        {step.skills && step.skills.length > 0 && (
-                          <div className="flex flex-wrap gap-2 mb-3">
-                            {step.skills.map((skill, skillIdx) => (
-                              <span 
-                                key={skillIdx}
-                                className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700"
-                              >
-                                <Lightbulb className="h-3 w-3 mr-1" />
-                                {skill}
-                              </span>
-                            ))}
+                        {/* Right Node (for even indices) */}
+                        {isEven && (
+                          <div className="relative flex-shrink-0 ml-6">
+                            <button
+                              onClick={() => handleNodeClick(node)}
+                              disabled={node.locked}
+                              className={`
+                                relative w-20 h-20 rounded-full border-3 transition-all duration-700 group
+                                flex items-center justify-center shadow-xl hover:shadow-2xl
+                                transform hover:scale-110 ${node.locked ? 'cursor-not-allowed' : 'cursor-pointer'}
+                                ${getNodeStyle(node)}
+                                ${isCurrentNode ? 'animate-current-node' : ''}
+                              `}
+                            >
+                              {/* Glow Effect for Active Nodes */}
+                              {!node.locked && (
+                                <div className={`
+                                  absolute inset-0 rounded-full bg-[hsl(var(--brand))]/20 blur-lg transition-opacity duration-300
+                                  ${isCurrentNode ? 'opacity-60' : 'opacity-0 group-hover:opacity-100'}
+                                `}></div>
+                              )}
+                              
+                              {/* Enhanced Glow for Current Node */}
+                              {isCurrentNode && (
+                                <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-[hsl(var(--brand))]/30 to-[hsl(var(--brand-accent))]/30 blur-md opacity-70 animate-pulse"></div>
+                              )}
+                              
+                              {/* Node Icon */}
+                              <div className="relative z-10 transition-transform duration-300 group-hover:rotate-12">
+                                {getNodeIcon(node)}
+                              </div>
+                              
+                              {/* Progress Ring for Module Nodes */}
+                              {node.type === 'module' && node.progress !== undefined && node.progress > 0 && (
+                                <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 80 80">
+                                  <circle
+                                    cx="40"
+                                    cy="40"
+                                    r="36"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    fill="none"
+                                    className="text-gray-200"
+                                  />
+                                  <circle
+                                    cx="40"
+                                    cy="40"
+                                    r="36"
+                                    stroke="hsl(var(--brand))"
+                                    strokeWidth="3"
+                                    fill="none"
+                                    strokeDasharray={`${2 * Math.PI * 36}`}
+                                    strokeDashoffset={`${2 * Math.PI * 36 * (1 - (node.progress || 0) / 100)}`}
+                                    className="transition-all duration-1000 ease-out"
+                                    style={{ filter: 'drop-shadow(0 0 6px hsl(var(--brand)))' }}
+                                  />
+                                </svg>
+                              )}
+                              
+                              {/* Completion Badge */}
+                              {node.completed && (
+                                <div className="absolute -top-1 -right-1 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center shadow-lg">
+                                  <CheckCircle className="w-4 h-4 text-white" />
+                                </div>
+                              )}
+                            </button>
+                            
+                            {/* Floating Animation for Current Node Only */}
+                            {isCurrentNode && (
+                              <div className="absolute -inset-2 bg-[hsl(var(--brand))]/10 rounded-full animate-current-pulse opacity-75"></div>
+                            )}
                           </div>
-                        )}
-
-                        {/* Action Button */}
-                        {isNext && (
-                          <Button size="sm" className="mt-2 bg-gradient-to-r from-indigo-600 to-purple-600">
-                            Start This Step <ChevronRight className="ml-1 h-4 w-4" />
-                          </Button>
                         )}
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+              
+              {/* Load More Section */}
+              {pathNodes.length > visibleNodes && (
+                <div className="mt-16 text-center">
+                  <div className="inline-block bg-white/80 backdrop-blur-sm rounded-2xl p-8 shadow-lg border border-gray-200/50">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-center space-x-2">
+                        <div className="w-12 h-0.5 bg-gradient-to-r from-transparent via-[hsl(var(--brand))] to-transparent"></div>
+                        <Package2 className="w-6 h-6 text-[hsl(var(--brand))]" />
+                        <div className="w-12 h-0.5 bg-gradient-to-r from-transparent via-[hsl(var(--brand))] to-transparent"></div>
+                      </div>
+                      <h3 className="text-xl font-semibold text-gray-900">Continue Your Journey</h3>
+                      <p className="text-gray-600 max-w-md mx-auto">
+                        {pathNodes.length - visibleNodes} more modules await. Load them to continue your personalized learning path.
+                      </p>
+                      <Button 
+                        onClick={() => {
+                          const newVisible = Math.min(visibleNodes + 6, pathNodes.length);
+                          setVisibleNodes(newVisible);
+                        }}
+                        className="bg-[hsl(var(--brand))] hover:bg-[hsl(var(--brand))]/90 text-white px-8 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
+                      >
+                        <span className="flex items-center gap-2">
+                          Load More Modules
+                        </span>
+                      </Button>
+                      <p className="text-sm text-gray-500 mt-2">
+                        Showing {visibleNodes} of {pathNodes.length} modules
+                      </p>
+                    </div>
                   </div>
-                );
-              })}
+                </div>
+              )}
             </div>
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        {isFirstTime && !userProgress && (
-          <div className="text-center space-y-4">
-            <Button 
-              onClick={enrollInPath}
-              disabled={enrolling}
-              size="lg"
-              className="bg-gradient-to-r from-indigo-600 to-purple-600 text-lg px-8 py-3"
-            >
-              {enrolling ? "Enrolling..." : "Start My Learning Journey"}
-            </Button>
-            <p className="text-sm text-gray-600">
-              You can always access your learning path from the sidebar
-            </p>
+            
+            {/* Enhanced Legend */}
+            <div className="mt-16 bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-lg border border-gray-200/50">
+              <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <Star className="w-5 h-5 text-[hsl(var(--brand))]" />
+                Learning Path Guide
+              </h4>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                {/* Available Node */}
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-[hsl(var(--brand))] border-[hsl(var(--brand))] text-white rounded-full flex items-center justify-center shadow-md">
+                    <Star className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-medium text-gray-900">Available</div>
+                    <div className="text-xs text-gray-600">Ready to start</div>
+                  </div>
+                </div>
+                
+                {/* Completed Node */}
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-green-500 border-green-500 text-white rounded-full flex items-center justify-center shadow-md">
+                    <CheckCircle className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-medium text-gray-900">Completed</div>
+                    <div className="text-xs text-gray-600">Well done!</div>
+                  </div>
+                </div>
+                
+                {/* Locked Node */}
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gray-400 border-gray-400 text-white rounded-full flex items-center justify-center shadow-md">
+                    <Lock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-medium text-gray-900">Locked</div>
+                    <div className="text-xs text-gray-600">Complete prerequisites first</div>
+                  </div>
+                </div>
+                
+                {/* Final Goal */}
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-br from-yellow-400 to-yellow-600 border-yellow-500 text-white rounded-full flex items-center justify-center shadow-md">
+                    <Trophy className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-medium text-gray-900">Final Goal</div>
+                    <div className="text-xs text-gray-600">Journey completion</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-xl border-l-4 border-blue-400">
+                <div className="flex-shrink-0">
+                  <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Zap className="w-4 h-4 text-blue-600" />
+                  </div>
+                </div>
+                <div>
+                  <div className="font-medium text-blue-900">Pro Tip</div>
+                  <div className="text-sm text-blue-700 mt-1">
+                    Hover over nodes to see progress rings and glow effects. Complete modules sequentially to unlock the next step in your learning journey.
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+// Types
+type ModuleWithMandatory = {
+  id: string;
+  title: string;
+  course_title: string;
+  subject_title: string;
+  completed?: boolean;
+  progress?: number;
+  is_mandatory?: boolean;
+  order_index?: number;
+}
+
+type PathNode = {
+  id: string;
+  type: 'start' | 'module' | 'milestone' | 'final';
+  title: string;
+  description?: string;
+  completed: boolean;
+  locked: boolean;
+  progress?: number;
+  module?: ModuleWithMandatory;
 }

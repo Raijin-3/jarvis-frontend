@@ -33,6 +33,7 @@ interface SidebarProps {
     tier?: string
     xp?: number
     level?: number
+    role?: string
   }
 }
 
@@ -98,11 +99,21 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
     },
   ]
 
-  const userMenuItems = [
-    { href: "/profile", label: "Profile", icon: <User className="h-4 w-4" /> },
-    { href: "/learning-path", label: "Learning Path", icon: <Target className="h-4 w-4" /> },
-    { href: "/settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
-  ]
+  // Create userMenuItems based on role
+  const getUserMenuItems = (userRole?: string) => {
+    const items = [
+      { href: "/profile", label: "Profile", icon: <User className="h-4 w-4" /> },
+    ];
+    
+    // Only show Learning Path for non-admin users (students and teachers)
+    if (userRole !== "admin") {
+      items.push({ href: "/learning-path", label: "Learning Path", icon: <Target className="h-4 w-4" /> });
+    }
+    
+    items.push({ href: "/settings", label: "Settings", icon: <Settings className="h-4 w-4" /> });
+    
+    return items;
+  };
 
   const defaultUser = {
     name: "Learner",
@@ -110,6 +121,7 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
     tier: "Silver",
     xp: 1540,
     level: 2,
+    role: "student",
     ...(user || {})
   }
 
@@ -127,7 +139,8 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
         const level = typeof data.level === 'number' ? data.level : Math.floor(xp / 1000) + 1
         const tier = typeof data.tier === 'string' ? data.tier : summary.tier
         const name = typeof data.name === 'string' && data.name.trim() ? data.name : summary.name
-        const next = { ...summary, xp, level, tier, name }
+        const role = typeof data.role === 'string' ? data.role : summary.role
+        const next = { ...summary, xp, level, tier, name, role }
         if (!cancelled) setSummary(next)
       } catch {}
     })()
@@ -346,7 +359,7 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
               <div className={`${open ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300 mb-3`}>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Account</h3>
               </div>
-              {userMenuItems.map((item) => {
+              {getUserMenuItems(summary.role).map((item) => {
                 const isActive = active === item.href
                 return (
                   <a

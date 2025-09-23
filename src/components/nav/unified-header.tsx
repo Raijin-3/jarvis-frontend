@@ -34,23 +34,53 @@ type Props = {
   } | null
 }
 
-const publicNavItems = [
+type NavItem = {
+  href: string
+  label: string
+  icon: React.ReactNode
+}
+
+const publicNavItems: NavItem[] = [
   // Navigation items removed as requested
 ]
 
-const userNavItems = [
+const userNavItems: NavItem[] = [
   // Navigation items removed as requested
 ]
 
-export function UnifiedHeader({ user, userProfile }: Props) {
+export function UnifiedHeader({ user: initialUser, userProfile: initialUserProfile }: Props) {
   const [isOpen, setIsOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const [user, setUser] = useState(initialUser)
+  const [userProfile, setUserProfile] = useState(initialUserProfile)
   const router = useRouter()
   const sb = supabaseBrowser()
 
   useEffect(() => {
     setMounted(true)
-  }, [])
+
+    // Listen for auth state changes
+    const { data: { subscription } } = sb.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        setUser(session.user)
+        // Fetch updated profile data
+        try {
+          const response = await fetch('/api/profile')
+          if (response.ok) {
+            const profile = await response.json()
+            setUserProfile(profile)
+          }
+        } catch (error) {
+          console.error('Error fetching profile after login:', error)
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null)
+        setUserProfile(null)
+      }
+    })
+
+    return () => subscription.unsubscribe()
+  }, [sb.auth])
 
   const handleLogout = async () => {
     try {
@@ -142,8 +172,8 @@ export function UnifiedHeader({ user, userProfile }: Props) {
 
           {/* Right Side */}
           <div className="flex items-center gap-4">
-            {isAuthenticated ? (
-              <AuthenticatedNav 
+            {isAuthenticated && user ? (
+              <AuthenticatedNav
                 user={user}
                 userProfile={userProfile}
                 displayName={displayName}
@@ -363,12 +393,15 @@ function AuthenticatedNav({
                 <span>Dashboard</span>
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href="/learning-path" className="flex items-center cursor-pointer">
-                <BookOpen className="mr-2 h-4 w-4" />
-                <span>Learning Path</span>
-              </Link>
-            </DropdownMenuItem>
+            {/* Only show Learning Path for non-admin users */}
+            {userProfile?.role !== "admin" && (
+              <DropdownMenuItem asChild>
+                <Link href="/learning-path" className="flex items-center cursor-pointer">
+                  <BookOpen className="mr-2 h-4 w-4" />
+                  <span>Learning Path</span>
+                </Link>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem asChild>
               <Link href="/profile" className="flex items-center cursor-pointer">
                 <User className="mr-2 h-4 w-4" />
