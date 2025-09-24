@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
       ...(searchParams.get('user_id') && { user_id: searchParams.get('user_id')! }),
       ...(searchParams.get('course_id') && { course_id: searchParams.get('course_id')! }),
       ...(searchParams.get('status') && { status: searchParams.get('status')! }),
+      ...(searchParams.get('search') && { search: searchParams.get('search')! }),
       ...(searchParams.get('page') && { page: searchParams.get('page')! }),
       ...(searchParams.get('limit') && { limit: searchParams.get('limit')! }),
     })

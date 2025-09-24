@@ -193,13 +193,18 @@ export function CourseAssignmentManagementClient() {
       })
 
       const response = await fetch(`/api/admin/course-assignments?${params}`)
-      if (!response.ok) throw new Error('Failed to fetch assignments')
-      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        throw new Error(`Failed to fetch assignments (${response.status}): ${errorText}`)
+      }
+
       const data = await response.json()
+      console.log(data.assignments);
       setAssignments(data.assignments)
       setTotalPages(data.totalPages)
-    } catch (error) {
-      toast.error('Failed to fetch assignments')
+    } catch (error: any) {
+      const errorMessage = error.message || 'Unknown error occurred'
+      toast.error(`Failed to fetch assignments: ${errorMessage}`)
       console.error('Error fetching assignments:', error)
     }
   }
@@ -208,8 +213,11 @@ export function CourseAssignmentManagementClient() {
   const fetchStats = async () => {
     try {
       const response = await fetch('/api/admin/course-assignments/stats')
-      if (!response.ok) throw new Error('Failed to fetch stats')
-      
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        throw new Error(`Failed to fetch stats (${response.status}): ${errorText}`)
+      }
+
       const data = await response.json()
       setStats(data)
     } catch (error) {
@@ -222,10 +230,13 @@ export function CourseAssignmentManagementClient() {
   const fetchUsers = async () => {
     try {
       const response = await fetch('/api/admin/users?role=student')
-      if (!response.ok) throw new Error('Failed to fetch users')
-      
-      const data = await response.json()
-      setUsers(data.users)
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        console.error(`Error fetching users (${response.status}): ${errorText}`)
+      } else {
+        const data = await response.json()
+        setUsers(data.users)
+      }
     } catch (error) {
       console.error('Error fetching users:', error)
     }
@@ -235,10 +246,13 @@ export function CourseAssignmentManagementClient() {
   const fetchCourses = async () => {
     try {
       const response = await fetch('/api/admin/courses')
-      if (!response.ok) throw new Error('Failed to fetch courses')
-      
-      const data = await response.json()
-      setCourses(data)
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        console.error(`Error fetching courses (${response.status}): ${errorText}`)
+      } else {
+        const data = await response.json()
+        setCourses(data)
+      }
     } catch (error) {
       console.error('Error fetching courses:', error)
     }

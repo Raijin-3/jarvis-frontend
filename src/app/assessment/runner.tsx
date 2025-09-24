@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
 import { useRouter } from "next/navigation";
 import { ImageIcon } from "lucide-react";
+import { FormattedText } from "@/components/ui/rich-text-editor";
 
 const SUPABASE_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
 const SUPABASE_ASSESSMENT_BUCKET =
@@ -256,9 +257,13 @@ export function AssessmentRunner() {
             />
           </div>
           {/* Prompt */}
-          <h2 className="text-base font-semibold sm:text-lg">
-            {current.prompt}
-          </h2>
+          <div className="text-base font-semibold sm:text-lg">
+            {current.prompt && current.prompt !== '<p></p>' ? (
+              <FormattedText content={current.prompt} />
+            ) : (
+              current.prompt
+            )}
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Answer within {currentTimeLimit} seconds. Skip if unsure - no
             guessing.
@@ -321,7 +326,13 @@ export function AssessmentRunner() {
                             setAnswer(current.id, e.target.value)
                           }
                         />
-                        <span className="text-sm">{opt}</span>
+                        <span className="text-sm">
+                          {opt && opt !== '<p></p>' && typeof opt === 'string' && opt.includes('<') ? (
+                            <FormattedText content={opt} className="inline" />
+                          ) : (
+                            opt
+                          )}
+                        </span>
                       </label>
                     );
                   },

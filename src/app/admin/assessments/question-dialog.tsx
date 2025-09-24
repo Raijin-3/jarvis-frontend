@@ -12,6 +12,7 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import { Plus, Loader2, Trash2, Upload, X } from "lucide-react"
+import { RichTextEditor, FormattedText } from "@/components/ui/rich-text-editor"
 
 const SUPPORTED_QUESTION_TYPES = ["mcq", "image_mcq", "short_text", "text", "image_text", "fill_blank"] as const
 type SupportedQuestionType = (typeof SUPPORTED_QUESTION_TYPES)[number]
@@ -60,7 +61,7 @@ interface QuestionDialogProps {
 }
 
 const createEmptyQuestionForm = (): QuestionFormState => ({
-  question_text: "",
+  question_text: "<p></p>",
   question_type: "mcq",
   module_id: "",
   category_id: null,
@@ -71,8 +72,8 @@ const createEmptyQuestionForm = (): QuestionFormState => ({
   tags: [],
   question_image_url: null,
   options: [
-    { option_text: "", is_correct: true, explanation: "" },
-    { option_text: "", is_correct: false, explanation: "" },
+    { option_text: "<p></p>", is_correct: true, explanation: "" },
+    { option_text: "<p></p>", is_correct: false, explanation: "" },
   ],
   text_answer: {
     correct_answer: "",
@@ -186,7 +187,7 @@ export function QuestionDialog({
       Array.isArray(editingQuestion.options) &&
       editingQuestion.options.length > 0
         ? editingQuestion.options.map((option: any) => ({
-            option_text: option.option_text ?? "",
+            option_text: option.option_text ?? "<p></p>",
             is_correct: Boolean(option.is_correct),
             explanation: option.explanation ?? "",
           }))
@@ -208,7 +209,7 @@ export function QuestionDialog({
         : { ...baseForm.text_answer }
 
     setForm({
-      question_text: editingQuestion.question_text ?? "",
+      question_text: editingQuestion.question_text ?? "<p></p>",
       question_type: normalizedType,
       module_id: editingQuestion.module_id ?? "",
       category_id: editingQuestion.category_id ?? null,
@@ -248,7 +249,11 @@ export function QuestionDialog({
 
 
   const handleSave = async () => {
-    if (!form.question_text.trim()) {
+    // Check if question text has meaningful content (not just empty HTML)
+    const hasQuestionText = form.question_text && form.question_text !== '<p></p>' && 
+      form.question_text.replace(/<[^>]*>/g, '').trim().length > 0
+    
+    if (!hasQuestionText) {
       toast.error("Question text is required")
       return
     }
@@ -259,7 +264,11 @@ export function QuestionDialog({
     }
 
     if (isMultipleChoice) {
-      const hasValidOptions = form.options.every(opt => opt.option_text.trim())
+      // Check if options have meaningful content
+      const hasValidOptions = form.options.every(opt => 
+        opt.option_text && opt.option_text !== '<p></p>' && 
+        opt.option_text.replace(/<[^>]*>/g, '').trim().length > 0
+      )
       const hasCorrectAnswer = form.options.some(opt => opt.is_correct)
 
       if (!hasValidOptions) {
@@ -281,7 +290,7 @@ export function QuestionDialog({
     setSaving(true)
     try {
       const payload = {
-        question_text: form.question_text.trim(),
+        question_text: form.question_text,
         question_type: form.question_type,
         module_id: form.module_id,
         category_id: form.category_id || null,
@@ -294,7 +303,7 @@ export function QuestionDialog({
         ...(isMultipleChoice
           ? {
               options: form.options.map((option, index) => ({
-                option_text: option.option_text.trim(),
+                option_text: option.option_text,
                 is_correct: option.is_correct,
                 order_index: index,
                 explanation: option.explanation?.trim() || null,
@@ -384,7 +393,7 @@ export function QuestionDialog({
     if (form.options.length >= 6) return
     setForm(prev => ({
       ...prev,
-      options: [...prev.options, { option_text: "", is_correct: false, explanation: "" }]
+      options: [...prev.options, { option_text: "<p></p>", is_correct: false, explanation: "" }]
     }))
   }
 
@@ -454,13 +463,10 @@ export function QuestionDialog({
               
               <div className="space-y-2">
                 <Label htmlFor="question_text">Question Text *</Label>
-                <Textarea
-                  id="question_text"
-                  placeholder="Enter your question here..."
-                  value={form.question_text}
-                  onChange={(e) => setForm(prev => ({ ...prev, question_text: e.target.value }))}
-                  rows={3}
-                  className="resize-none"
+                <RichTextEditor
+                  content={form.question_text}
+                  onChange={(content) => setForm(prev => ({ ...prev, question_text: content }))}
+                  placeholder="Enter your question here... Use bold, italic, and line breaks to format your text."
                 />
               </div>
 
@@ -694,10 +700,11 @@ export function QuestionDialog({
                               Correct Answer
                             </Label>
                           </div>
-                          <Input
-                            placeholder={`Option ${index + 1} text`}
-                            value={option.option_text}
-                            onChange={(e) => updateOption(index, 'option_text', e.target.value)}
+                          <RichTextEditor
+                            content={option.option_text}
+                            onChange={(content) => updateOption(index, 'option_text', content)}
+                            placeholder={`Option ${index + 1} text - Use formatting if needed`}
+                            className="min-h-[80px]"
                           />
                           <Input
                             placeholder="Optional explanation for this option"
@@ -801,7 +808,11 @@ export function QuestionDialog({
               <div>
                 <div className="font-medium text-sm text-muted-foreground mb-2">Question Text</div>
                 <div className="text-sm">
-                  {form.question_text || "Enter question text..."}
+                  {form.question_text && form.question_text !== '<p></p>' ? (
+                    <FormattedText content={form.question_text} />
+                  ) : (
+                    <span className="text-muted-foreground">Enter question text...</span>
+                  )}
                 </div>
               </div>
 
@@ -829,7 +840,12 @@ export function QuestionDialog({
                             : "bg-gray-50"
                         }`}
                       >
-                        {`${String.fromCharCode(65 + index)}. ${option.option_text || `Option ${index + 1}`}`}
+                        <span className="font-medium">{String.fromCharCode(65 + index)}. </span>
+                        {option.option_text && option.option_text !== '<p></p>' ? (
+                          <FormattedText content={option.option_text} className="inline" />
+                        ) : (
+                          <span className="text-muted-foreground">Option {index + 1}</span>
+                        )}
                       </div>
                     ))}
                   </div>

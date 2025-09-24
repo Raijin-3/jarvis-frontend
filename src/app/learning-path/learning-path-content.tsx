@@ -427,12 +427,18 @@ export function LearningPathContent({ isFirstTime, profile }: { isFirstTime: boo
                               {/* Module Status and Progress */}
                               {node.type === 'module' && (
                                 <div className="mt-2 flex items-center gap-2">
-                                  {node.module?.is_mandatory && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-[hsl(var(--brand))]/10 text-[hsl(var(--brand))] rounded-full">
-                                      <Zap className="w-3 h-3" />
-                                      Mandatory
-                                    </span>
-                                  )}
+                                  {node.module?.status && (
+                                      <span
+                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full ${
+                                          node.module?.status.includes('optional')
+                                            ? 'bg-[hsl(var(--brand))]/10 text-amber-700'
+                                            : 'bg-[hsl(var(--brand))]/10 text-[hsl(var(--brand))]'
+                                        }`}
+                                      >
+                                        <Zap className="w-3 h-3" />
+                                        {node.module?.status}
+                                      </span>
+                                    )}
                                   {node.progress !== undefined && node.progress > 0 && (
                                     <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full">
                                       {node.progress}% Complete
