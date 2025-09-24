@@ -340,7 +340,7 @@ export function CourseAssignmentManagementClient() {
 
   // Delete assignment handler
   const handleDeleteAssignment = async (assignment: CourseAssignment) => {
-    if (!confirm(`Remove course assignment for ${assignment.user.full_name || assignment.user.email}?`)) {
+    if (!confirm(`Remove course assignment for ${assignment.user?.full_name || assignment.user?.email || 'Unknown Student'}?`)) {
       return
     }
 
@@ -633,10 +633,10 @@ export function CourseAssignmentManagementClient() {
                         <User className="h-4 w-4 text-gray-400" />
                         <div>
                           <div className="font-medium">
-                            {assignment.user.full_name || assignment.user.email}
+                            {assignment.user?.full_name || assignment.user?.email || 'Unknown User'}
                           </div>
                           <div className="text-sm text-gray-500">
-                            {assignment.user.email}
+                            {assignment.user?.email || 'No email'}
                           </div>
                         </div>
                       </div>
@@ -645,7 +645,7 @@ export function CourseAssignmentManagementClient() {
                       <div className="flex items-center space-x-2">
                         <BookOpen className="h-4 w-4 text-gray-400" />
                         <div>
-                          <div className="font-medium">{assignment.course.title}</div>
+                          <div className="font-medium">{assignment.course?.title || 'Course Not Found'}</div>
                         </div>
                       </div>
                     </TableCell>
