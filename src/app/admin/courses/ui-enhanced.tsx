@@ -35,9 +35,9 @@ import {
    Types
    ========================= */
 type Id = string;
-type Lecture = { title: string; content: string; duration?: number };
-type Quiz = { id: Id; title: string; questions?: Question[]; completed?: boolean; totalQuestions?: number } | null;
-type Practice = { id: Id; title: string; content?: string; deleted?: boolean; difficulty?: "easy" | "medium" | "hard" };
+type Lecture = { id?: Id; title: string; content?: string; duration?: number; order_index?: number; type?: string };
+type Quiz = { id: Id; title: string; questions?: Question[]; completed?: boolean; totalQuestions?: number; order_index?: number; deleted?: boolean } | null;
+type Practice = { id: Id; title: string; content?: string; deleted?: boolean; difficulty?: "easy" | "medium" | "hard"; order_index?: number };
 type Question = {
   id: Id;
   text: string;
@@ -55,9 +55,10 @@ type Option = { id: Id; text: string; correct: boolean; deleted?: boolean };
 type Section = {
   id: Id;
   title: string;
-  lecture: Lecture | null;
-  practices: Practice[];
-  quiz: Quiz;
+  lectures?: Lecture[];
+  practices?: Practice[];
+  quiz?: Quiz;
+  quizzes?: (Quiz | null)[];
   deleted?: boolean;
   order_index?: number;
   status?: "draft" | "published" | "archived";
@@ -122,6 +123,112 @@ function normalizeCourseFull(input: unknown): CourseFull {
     category: c.category ?? "General",
     subjects: Array.isArray(c.subjects) ? c.subjects : [],
   };
+}
+
+
+const lectureTypes = ['text', 'video', 'image', 'audio', 'pdf'] as const;
+type LectureContentType = typeof lectureTypes[number];
+
+function parseLectureContent(raw: unknown): {
+  body: string;
+  type: LectureContentType;
+  duration?: number;
+  url?: string;
+} {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { body: '', type: 'text' };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const maybeType = record.type;
+      const type = typeof maybeType === 'string' && lectureTypes.includes(maybeType as LectureContentType)
+        ? (maybeType as LectureContentType)
+        : 'text';
+      const duration = record.duration;
+      const url = record.url;
+      const bodyValue = record.body ?? record.content;
+      return {
+        body: typeof bodyValue === 'string' ? bodyValue : raw,
+        type,
+        duration: typeof duration === 'number' ? duration : undefined,
+        url: typeof url === 'string' ? url : undefined,
+      };
+    }
+  } catch (_error) {
+    // ignore malformed JSON and fallback to plain text content
+  }
+  return { body: raw, type: 'text' };
+}
+
+function serializeLectureContent(lecture: { content?: unknown; type?: unknown; duration?: unknown; url?: unknown }): string {
+  const body = typeof lecture.content === 'string' ? lecture.content : '';
+  const typeString = typeof lecture.type === 'string' && lectureTypes.includes(lecture.type as LectureContentType)
+    ? (lecture.type as LectureContentType)
+    : 'text';
+  const duration = typeof lecture.duration === 'number' && Number.isFinite(lecture.duration)
+    ? lecture.duration
+    : undefined;
+  const url = typeof lecture.url === 'string' ? lecture.url : undefined;
+  const payload: Record<string, unknown> = {
+    version: 1,
+    type: typeString,
+    body,
+  };
+  if (duration !== undefined) payload.duration = duration;
+  if (url && url.trim() !== '') payload.url = url;
+  if (typeString !== 'text' || duration !== undefined || (url && url.trim() !== '')) {
+    return JSON.stringify(payload);
+  }
+  return body;
+}
+
+function parsePracticeContent(raw: unknown): {
+  description: string;
+  instructions: string;
+  starterCode: string;
+  expectedOutput: string;
+  difficulty?: string;
+  exerciseType?: string;
+  language?: string;
+  points?: number;
+  timeLimit?: number;
+  passingScore?: number;
+  maxAttempts?: number;
+} {
+  const fallback = {
+    description: typeof raw === 'string' ? raw : '',
+    instructions: typeof raw === 'string' ? raw : '',
+    starterCode: '',
+    expectedOutput: '',
+  };
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as Record<string, unknown>).version === 1) {
+      const record = parsed as Record<string, unknown>;
+      const pickNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+      return {
+        description: typeof record.instructions === 'string' ? record.instructions : fallback.description,
+        instructions: typeof record.instructions === 'string' ? record.instructions : fallback.instructions,
+        starterCode: typeof record.starterCode === 'string' ? record.starterCode : fallback.starterCode,
+        expectedOutput: typeof record.expectedOutput === 'string' ? record.expectedOutput : fallback.expectedOutput,
+        difficulty: typeof record.difficulty === 'string' ? record.difficulty : undefined,
+        exerciseType: typeof record.exerciseType === 'string' ? record.exerciseType : undefined,
+        language: typeof record.language === 'string' ? record.language : undefined,
+        points: pickNumber(record.points),
+        timeLimit: pickNumber(record.timeLimit),
+        passingScore: pickNumber(record.passingScore),
+        maxAttempts: pickNumber(record.maxAttempts),
+      };
+    }
+  } catch (_error) {
+    // ignore malformed JSON and fallback to plain text content
+  }
+  return fallback;
 }
 
 const statusColors = {
@@ -733,158 +840,395 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 targetSectionId = editingSection.id;
               }
 
-              // If there's lecture data, add it to the section
-              if (data.lecture) {
+              if (!targetSectionId) {
+                throw new Error("Missing section identifier");
+              }
+
+              // Handle lectures (create/update/delete)
+              const submittedLecturesRaw = Array.isArray(data.lectures) ? data.lectures : [];
+              const allLectureEntries = submittedLecturesRaw.length === 0 && data.lecture
+                ? [data.lecture]
+                : submittedLecturesRaw;
+              const normalizedLectures = allLectureEntries
+                .filter((lecture: any) => (lecture?.title || '').trim() !== '')
+                .map((lecture: any, idx: number) => ({
+                  id: typeof lecture.id === 'string' ? lecture.id : undefined,
+                  title: lecture.title ?? '',
+                  order: typeof lecture.order_index === 'number' ? lecture.order_index : idx + 1,
+                  content: serializeLectureContent(lecture),
+                }));
+              const existingLectures = editingSection?.lectures ?? [];
+              const existingLectureMap = new Map(existingLectures.map((lecture: any) => [lecture.id, lecture]));
+              const lectureIds = new Set(
+                normalizedLectures
+                  .map((lecture) => lecture.id)
+                  .filter((id): id is string => typeof id === 'string'),
+              );
+              const lecturesToDelete = existingLectures.filter((lecture: any) => !lectureIds.has(lecture.id));
+              const lecturesToUpdate = normalizedLectures.filter(
+                (lecture) => lecture.id && existingLectureMap.has(lecture.id),
+              );
+              const lecturesToCreate = normalizedLectures.filter(
+                (lecture) => !lecture.id || !existingLectureMap.has(lecture.id),
+              );
+
+              if (lecturesToCreate.length > 0) {
+                const createRes = await fetch(`/api/admin/modules/sections/${targetSectionId}/lectures`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    lectures: lecturesToCreate.map((lecture) => ({
+                      title: lecture.title,
+                      content: lecture.content,
+                      order: lecture.order,
+                    })),
+                  }),
+                });
+                if (!createRes.ok) {
+                  console.warn('Failed to create lectures for section');
+                }
+              }
+
+              for (const lecture of lecturesToUpdate) {
+                const updateRes = await fetch(`/api/admin/lectures/${lecture.id}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    title: lecture.title,
+                    content: lecture.content,
+                    order: lecture.order,
+                  }),
+                });
+                if (!updateRes.ok) {
+                  console.warn('Failed to update lecture', lecture.id);
+                }
+              }
+
+              for (const lecture of lecturesToDelete) {
                 try {
-                  const lectureRes = await fetch(`/api/admin/sections/${targetSectionId}/lecture`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      title: data.lecture.title,
-                      content: data.lecture.content,
-                      duration: (data.lecture as { duration?: number }).duration,
-                      type: (data.lecture as { type?: string }).type,
-                    }),
+                  const deleteRes = await fetch(`/api/admin/lectures/${lecture.id}`, { method: 'DELETE' });
+                  if (!deleteRes.ok) {
+                    console.warn('Failed to delete lecture', lecture.id);
+                  }
+                } catch (lectureDeleteError) {
+                  console.warn('Failed to delete lecture', lecture.id, lectureDeleteError);
+                }
+              }
+
+              // Handle practice exercises
+              const submittedPractices = Array.isArray(data.practices) ? data.practices : [];
+              const normalizedPractices = submittedPractices
+                .filter((practice: any) => (practice?.title || '').trim() !== '')
+                .map((practice: any, idx: number) => ({
+                  id: typeof practice.id === 'string' ? practice.id : undefined,
+                  order: typeof practice.order_index === 'number' ? practice.order_index : idx + 1,
+                  payload: {
+                    title: practice.title,
+                    instructions: practice.instructions || practice.content || practice.description || '',
+                    exerciseType: practice.type,
+                    starterCode: practice.starterCode,
+                    expectedOutput: practice.expectedOutput,
+                    difficulty: practice.difficulty,
+                    language: practice.language,
+                    points: practice.points,
+                    timeLimit: practice.timeLimit,
+                    passingScore: practice.passingScore,
+                    maxAttempts: practice.maxAttempts,
+                  },
+                }));
+              const existingPractices = editingSection?.practices ?? [];
+              const existingPracticeMap = new Map(existingPractices.map((practice: any) => [practice.id, practice]));
+              const practiceIds = new Set(
+                normalizedPractices
+                  .map((practice) => practice.id)
+                  .filter((id): id is string => typeof id === 'string'),
+              );
+              const practicesToDelete = existingPractices.filter((practice: any) => !practiceIds.has(practice.id));
+              const practicesToUpdate = normalizedPractices.filter(
+                (practice) => practice.id && existingPracticeMap.has(practice.id),
+              );
+              const practicesToCreate = normalizedPractices.filter(
+                (practice) => !practice.id || !existingPracticeMap.has(practice.id),
+              );
+
+              for (const practice of practicesToCreate) {
+                const instructions =
+                  typeof practice.payload.instructions === 'string' && practice.payload.instructions.trim() !== ''
+                    ? practice.payload.instructions
+                    : practice.payload.title;
+                const exerciseTypeValue = (() => {
+                  if (typeof practice.payload.exerciseType === 'string' && practice.payload.exerciseType.trim() !== '') {
+                    const value = practice.payload.exerciseType.trim().toLowerCase();
+                    return value === 'practical' ? 'coding' : value;
+                  }
+                  return 'coding';
+                })();
+                const createRes = await fetch(`/api/admin/sections/${targetSectionId}/practice-exercises`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    title: practice.payload.title,
+                    order: practice.order,
+                    instructions,
+                    exerciseType: exerciseTypeValue,
+                    starterCode: practice.payload.starterCode,
+                    expectedOutput: practice.payload.expectedOutput,
+                    difficulty: practice.payload.difficulty,
+                    language: practice.payload.language ?? 'python',
+                    points: practice.payload.points,
+                    timeLimit: practice.payload.timeLimit,
+                    passingScore: practice.payload.passingScore,
+                    maxAttempts: practice.payload.maxAttempts,
+                  }),
+                });
+                if (!createRes.ok) {
+                  const errorText = await createRes.text();
+                  throw new Error(`Failed to add practice exercise "${practice.payload.title}": ${errorText}`);
+                }
+              }
+
+              for (const practice of practicesToUpdate) {
+                const instructions =
+                  typeof practice.payload.instructions === 'string' && practice.payload.instructions.trim() !== ''
+                    ? practice.payload.instructions
+                    : practice.payload.title;
+                const exerciseTypeValue = (() => {
+                  if (typeof practice.payload.exerciseType === 'string' && practice.payload.exerciseType.trim() !== '') {
+                    const value = practice.payload.exerciseType.trim().toLowerCase();
+                    return value === 'practical' ? 'coding' : value;
+                  }
+                  return 'coding';
+                })();
+                const updateRes = await fetch(`/api/admin/practice-exercises/${practice.id}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    title: practice.payload.title,
+                    order: practice.order,
+                    instructions,
+                    exerciseType: exerciseTypeValue,
+                    starterCode: practice.payload.starterCode,
+                    expectedOutput: practice.payload.expectedOutput,
+                    difficulty: practice.payload.difficulty,
+                    language: practice.payload.language ?? 'python',
+                    points: practice.payload.points,
+                    timeLimit: practice.payload.timeLimit,
+                    passingScore: practice.payload.passingScore,
+                    maxAttempts: practice.payload.maxAttempts,
+                  }),
+                });
+                if (!updateRes.ok) {
+                  const errorText = await updateRes.text();
+                  throw new Error(`Failed to update practice exercise "${practice.payload.title}": ${errorText}`);
+                }
+              }
+              for (const practice of practicesToDelete) {
+                try {
+                  const deleteRes = await fetch(`/api/admin/practice-exercises/${practice.id}`, { method: 'DELETE' });
+                  if (!deleteRes.ok) {
+                    const errorText = await deleteRes.text();
+                    throw new Error(`Failed to delete practice exercise: ${errorText}`);
+                  }
+                } catch (practiceDeleteError) {
+                  throw new Error(`Failed to delete practice exercise: ${practiceDeleteError.message}`);
+                }
+              }
+
+              // Handle quiz creation/update/removal
+              const quizData = data.quiz;
+              const existingQuiz = editingSection?.quiz;
+              const submittedQuestions = Array.isArray(quizData?.questions) ? quizData.questions : [];
+
+              let quizId: string | null = existingQuiz?.id ?? null;
+
+              if (quizData && submittedQuestions.length > 0) {
+                const quizTitle = (quizData as { title?: string }).title ?? existingQuiz?.title ?? 'Quiz';
+                if (quizId) {
+                  const quizUpdateRes = await fetch(`/api/admin/quizzes/${quizId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: quizTitle }),
                   });
-                  
-                  if (!lectureRes.ok) {
-                    console.warn("Failed to add lecture to section");
+                  if (!quizUpdateRes.ok) {
+                    console.warn('Failed to update quiz title');
                   }
-                } catch (lectureError) {
-                  console.warn("Failed to add lecture:", lectureError);
-                }
-              }
-
-              // If there are practice exercises, add them to the section
-              if (Array.isArray(data.practices) && data.practices.length > 0) {
-                for (const p of data.practices) {
-                  try {
-                    const practiceRes = await fetch(`/api/admin/sections/${targetSectionId}/practice-exercises`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        title: p.title,
-                        content: (p as { content?: string }).content,
-                        difficulty: (p as { difficulty?: string }).difficulty,
-                      }),
-                    });
-
-                    if (!practiceRes.ok) {
-                      console.warn("Failed to add practice exercise to section");
-                    }
-                  } catch (practiceError) {
-                    console.warn("Failed to add practice exercise:", practiceError);
-                  }
-                }
-              }
-
-              // If there's quiz data, add it to the section and create questions/options
-              if (data.quiz) {
-                try {
-                  let quizId: string | null = null;
-                  if (editingSection?.quiz?.id) {
-                    // Update existing quiz title if provided
-                    const qUp = await fetch(`/api/admin/quizzes/${editingSection.quiz.id}`, {
-                      method: "PUT",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ title: (data.quiz as { title: string }).title }),
-                    });
-                    if (!qUp.ok) console.warn("Failed to update quiz title");
-                    quizId = editingSection.quiz.id;
+                } else {
+                  const quizRes = await fetch(`/api/admin/sections/${targetSectionId}/quiz`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: quizTitle }),
+                  });
+                  if (quizRes.ok) {
+                    const quizJson = await quizRes.json().catch(() => ({}));
+                    const createdQuiz: Record<string, unknown> = unwrapData(quizJson);
+                    quizId =
+                      (createdQuiz?.id as string) ||
+                      ((createdQuiz?.quiz as Record<string, unknown>)?.id as string) ||
+                      null;
                   } else {
-                    const quizRes = await fetch(`/api/admin/sections/${targetSectionId}/quiz`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ title: (data.quiz as { title: string }).title }),
-                    });
-                    if (quizRes.ok) {
-                      const quizJson = await quizRes.json().catch(() => ({}));
-                      const createdQuiz: Record<string, unknown> = unwrapData(quizJson);
-                      quizId = (createdQuiz?.id as string) || ((createdQuiz?.quiz as Record<string, unknown>)?.id as string) || null;
-                    } else {
-                      console.warn("Failed to add quiz to section");
+                    console.warn('Failed to add quiz to section');
+                  }
+                }
+
+                if (quizId) {
+                  const existingQuestions = Array.isArray(existingQuiz?.questions) ? existingQuiz.questions : [];
+                  const existingQuestionMap = new Map(existingQuestions.map((question: any) => [question.id, question]));
+                  const normalizedQuestions = submittedQuestions
+                    .filter((question: any) => (question?.text || '').trim() !== '')
+                    .map((question: any, index: number) => ({
+                      id: typeof question.id === 'string' ? question.id : undefined,
+                      text: question.text ?? '',
+                      type: question.type ?? 'mcq',
+                      order: typeof question.order_index === 'number' ? question.order_index : index + 1,
+                      options: Array.isArray(question.options)
+                        ? question.options.map((option: any) => ({
+                            id: typeof option.id === 'string' ? option.id : undefined,
+                            text: option.text ?? '',
+                            correct: !!option.correct,
+                          }))
+                        : [],
+                    }));
+
+                  const questionIds = new Set(
+                    normalizedQuestions
+                      .map((question) => question.id)
+                      .filter((id): id is string => typeof id === 'string'),
+                  );
+                  const questionsToDelete = existingQuestions.filter((question: any) => !questionIds.has(question.id));
+                  const questionsToUpdate = normalizedQuestions.filter(
+                    (question) => question.id && existingQuestionMap.has(question.id),
+                  );
+                  const questionsToCreate = normalizedQuestions.filter(
+                    (question) => !question.id || !existingQuestionMap.has(question.id),
+                  );
+
+                  for (const question of questionsToDelete) {
+                    try {
+                      const deleteRes = await fetch(`/api/admin/questions/${question.id}`, { method: 'DELETE' });
+                      if (!deleteRes.ok) {
+                        console.warn('Failed to delete quiz question', question.id);
+                      }
+                    } catch (questionDeleteError) {
+                      console.warn('Failed to delete quiz question', question.id, questionDeleteError);
                     }
                   }
 
-                  // Create/update questions and options if provided
-                  const questions = (data.quiz as { questions?: unknown[] })?.questions;
-                  if (quizId && Array.isArray(questions) && questions.length > 0) {
-                    for (const q of questions) {
-                      try {
-                        let questionId: string | null = (q as Record<string, unknown>).id as string || null;
-                        if (questionId) {
-                          // Update existing question
-                          const qUp = await fetch(`/api/admin/quizzes/questions/${questionId}`, {
-                            method: "PUT",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              text: (q as Record<string, unknown>).text,
-                              type: (q as Record<string, unknown>).type,
-                              order_index: (q as Record<string, unknown>).order_index,
-                              hint: (q as Record<string, unknown>).hint,
-                              explanation: (q as Record<string, unknown>).explanation,
-                              content: (q as Record<string, unknown>).content,
-                              language: (q as Record<string, unknown>).language,
-                              correctAnswers: (q as Record<string, unknown>).correctAnswers,
-                            }),
-                          });
-                          if (!qUp.ok) console.warn("Failed to update quiz question");
-                        } else {
-                          // Create new question
-                          const qRes = await fetch(`/api/admin/quizzes/${quizId}/questions`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              text: (q as Record<string, unknown>).text,
-                              type: (q as Record<string, unknown>).type,
-                              order_index: (q as Record<string, unknown>).order_index,
-                              hint: (q as Record<string, unknown>).hint,
-                              explanation: (q as Record<string, unknown>).explanation,
-                              content: (q as Record<string, unknown>).content,
-                              language: (q as Record<string, unknown>).language,
-                              correctAnswers: (q as Record<string, unknown>).correctAnswers,
-                            }),
-                          });
-                          if (!qRes.ok) {
-                            console.warn("Failed to create quiz question");
-                            continue;
-                          }
-                          const qJson = await qRes.json().catch(() => ({}));
-                          const createdQuestion: Record<string, unknown> = unwrapData(qJson);
-                          questionId = (createdQuestion?.id as string) || ((createdQuestion?.question as Record<string, unknown>)?.id as string) || null;
-                        }
+                  const upsertQuestion = async (question: typeof questionsToCreate[number], existing?: any) => {
+                    let questionId: string | null = existing?.id ?? null;
 
-                        // Handle MCQ options
-                        if ((q as Record<string, unknown>).type === 'mcq' && questionId && Array.isArray((q as Record<string, unknown>).options)) {
-                          for (const opt of (q as Record<string, unknown>).options as Record<string, unknown>[]) {
-                            try {
-                              if (opt.id) {
-                                const oUp = await fetch(`/api/admin/quizzes/options/${opt.id}`, {
-                                  method: "PUT",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ text: opt.text, correct: !!opt.correct }),
-                                });
-                                if (!oUp.ok) console.warn("Failed to update option");
-                              } else {
-                                const oRes = await fetch(`/api/admin/quizzes/questions/${questionId}/options`, {
-                                  method: "POST",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ text: opt.text, correct: !!opt.correct }),
-                                });
-                                if (!oRes.ok) console.warn("Failed to add option to question");
-                              }
-                            } catch (optErr) {
-                              console.warn("Failed to upsert option:", optErr);
-                            }
+                    if (existing?.id) {
+                      const updateRes = await fetch(`/api/admin/questions/${existing.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          text: question.text,
+                          type: question.type,
+                          order: question.order,
+                        }),
+                      });
+                      if (!updateRes.ok) {
+                        console.warn('Failed to update quiz question', existing.id);
+                      } else {
+                        questionId = existing.id;
+                      }
+                    } else {
+                      const createRes = await fetch(`/api/admin/quizzes/${quizId}/questions`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          text: question.text,
+                          type: question.type,
+                          order: question.order,
+                        }),
+                      });
+                      if (!createRes.ok) {
+                        console.warn('Failed to create quiz question');
+                        return;
+                      }
+                      const qJson = await createRes.json().catch(() => ({}));
+                      const createdQuestion: Record<string, unknown> = unwrapData(qJson);
+                      questionId =
+                        (createdQuestion?.id as string) ||
+                        ((createdQuestion?.question as Record<string, unknown>)?.id as string) ||
+                        null;
+                    }
+
+                    if (!questionId) return;
+
+                    const existingOptions = Array.isArray(existing?.options) ? existing.options : [];
+                    const existingOptionMap = new Map(existingOptions.map((option: any) => [option.id, option]));
+                    const optionIds = new Set(
+                      question.options
+                        .map((option) => option.id)
+                        .filter((id): id is string => typeof id === 'string'),
+                    );
+                    const optionsToDelete = existingOptions.filter((option: any) => !optionIds.has(option.id));
+
+                    if (question.type !== 'mcq') {
+                      for (const option of existingOptions) {
+                        try {
+                          const deleteOptionRes = await fetch(`/api/admin/options/${option.id}`, { method: 'DELETE' });
+                          if (!deleteOptionRes.ok) {
+                            console.warn('Failed to delete quiz option', option.id);
                           }
+                        } catch (optionDeleteError) {
+                          console.warn('Failed to delete quiz option', option.id, optionDeleteError);
                         }
-                      } catch (qErr) {
-                        console.warn("Failed to upsert quiz question:", qErr);
+                      }
+                      return;
+                    }
+
+                    for (const option of optionsToDelete) {
+                      try {
+                        const deleteOptionRes = await fetch(`/api/admin/options/${option.id}`, { method: 'DELETE' });
+                        if (!deleteOptionRes.ok) {
+                          console.warn('Failed to delete quiz option', option.id);
+                        }
+                      } catch (optionDeleteError) {
+                        console.warn('Failed to delete quiz option', option.id, optionDeleteError);
                       }
                     }
+
+                    for (const option of question.options) {
+                      if (!option.text || option.text.trim() === '') continue;
+                      if (option.id && existingOptionMap.has(option.id)) {
+                        const updateOptionRes = await fetch(`/api/admin/options/${option.id}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ text: option.text, correct: !!option.correct }),
+                        });
+                        if (!updateOptionRes.ok) {
+                          console.warn('Failed to update option', option.id);
+                        }
+                      } else {
+                        const createOptionRes = await fetch(`/api/admin/quizzes/questions/${questionId}/options`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ text: option.text, correct: !!option.correct }),
+                        });
+                        if (!createOptionRes.ok) {
+                          console.warn('Failed to add option to question');
+                        }
+                      }
+                    }
+                  };
+
+                  for (const question of questionsToUpdate) {
+                    await upsertQuestion(question, existingQuestionMap.get(question.id));
                   }
-                } catch (quizError) {
-                  console.warn("Failed to add quiz:", quizError);
+
+                  for (const question of questionsToCreate) {
+                    await upsertQuestion(question);
+                  }
+                }
+              } else if (existingQuiz?.id) {
+                try {
+                  const deleteQuizRes = await fetch(`/api/admin/quizzes/${existingQuiz.id}`, { method: 'DELETE' });
+                  if (!deleteQuizRes.ok) {
+                    console.warn('Failed to delete quiz', existingQuiz.id);
+                  }
+                } catch (quizDeleteError) {
+                  console.warn('Failed to delete quiz', existingQuiz.id, quizDeleteError);
                 }
               }
 
@@ -1227,44 +1571,154 @@ function EnhancedCourseDetailsPanel({
                           {module.sections.length > 0 && (
                             <div>
                               <div className="text-xs font-medium text-gray-600 mb-1 px-2">Sections</div>
-                              {module.sections.map((section) => (
-                                <div key={section.id} className="flex items-center justify-between p-2 bg-white rounded border border-gray-100">
-                                  <div className="flex items-center gap-2">
-                                    <FileText className="h-3 w-3 text-purple-600" />
-                                    <span className="text-sm text-gray-700">{section.title}</span>
+                              {module.sections.map((section) => {
+                                const lectures = Array.isArray(section.lectures) ? section.lectures : [];
+                                const practices = Array.isArray(section.practices) ? section.practices : [];
+                                const quizSource = Array.isArray((section as any).quizzes)
+                                  ? (section as any).quizzes
+                                  : section.quiz
+                                    ? [section.quiz]
+                                    : [];
+                                const quizzes = quizSource.filter(Boolean);
+
+                                return (
+                                  <div key={section.id} className="bg-white rounded border border-gray-100">
+                                    <div className="flex items-start justify-between p-2">
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={() => toggleExpanded(section.id)}
+                                          className="p-1 hover:bg-gray-200 rounded"
+                                        >
+                                          {expandedItems[section.id] ? (
+                                            <ChevronDown className="h-3 w-3 text-gray-600" />
+                                          ) : (
+                                            <ChevronRight className="h-3 w-3 text-gray-600" />
+                                          )}
+                                        </button>
+                                        <FileText className="h-3 w-3 text-purple-600" />
+                                        <div>
+                                          <span className="text-sm font-medium text-gray-700">{section.title}</span>
+                                          {section.status && (
+                                            <div className="text-[10px] uppercase text-gray-400">{section.status}</div>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                                        <div className="flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 rounded">
+                                          <PlayCircle className="h-3 w-3" />
+                                          <span>{lectures.length}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1 px-2 py-1 bg-green-50 text-green-700 rounded">
+                                          <PenTool className="h-3 w-3" />
+                                          <span>{practices.length}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1 px-2 py-1 bg-orange-50 text-orange-700 rounded">
+                                          <HelpCircle className="h-3 w-3" />
+                                          <span>{quizzes.length}</span>
+                                        </div>
+                                        <button
+                                          className="p-1 hover:bg-gray-200 rounded"
+                                          onClick={() => onEditSection(module.id, section)}
+                                          title="Edit Section"
+                                        >
+                                          <Edit className="h-3 w-3 text-gray-400" />
+                                        </button>
+                                        <button className="p-1 hover:bg-gray-200 rounded">
+                                          <Trash2 className="h-3 w-3 text-red-400" />
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {expandedItems[section.id] && (
+                                      <div className="border-t border-gray-100 bg-gray-50 px-4 py-3 text-sm text-gray-700 space-y-4">
+                                        <div>
+                                          <div className="font-semibold text-gray-600 mb-2">Lectures</div>
+                                          {lectures.length > 0 ? (
+                                            <div className="space-y-2">
+                                              {lectures.map((lecture, lectureIndex) => (
+                                                <div
+                                                  key={lecture?.id || `${section.id}-lecture-${lectureIndex}`}
+                                                  className="flex items-start gap-2 rounded-lg bg-white p-2"
+                                                >
+                                                  <PlayCircle className="h-4 w-4 text-blue-500 mt-0.5" />
+                                                  <div className="space-y-1">
+                                                    <div className="font-medium text-gray-800">
+                                                      {lecture?.title || `Lecture ${lectureIndex + 1}`}
+                                                    </div>
+                                                    {lecture?.content && (
+                                                      <div className="text-xs text-gray-500 line-clamp-3">
+                                                        {lecture.content}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            <div className="text-xs text-gray-500">No lectures added yet.</div>
+                                          )}
+                                        </div>
+
+                                        <div>
+                                          <div className="font-semibold text-gray-600 mb-2">Exercises</div>
+                                          {practices.length > 0 ? (
+                                            <div className="space-y-2">
+                                              {practices.map((practice, practiceIndex) => (
+                                                <div
+                                                  key={practice?.id || `${section.id}-exercise-${practiceIndex}`}
+                                                  className="flex items-start gap-2 rounded-lg bg-white p-2"
+                                                >
+                                                  <PenTool className="h-4 w-4 text-green-500 mt-0.5" />
+                                                  <div>
+                                                    <div className="font-medium text-gray-800">
+                                                      {practice?.title || `Exercise ${practiceIndex + 1}`}
+                                                    </div>
+                                                    {practice?.content && (
+                                                      <div className="text-xs text-gray-500 line-clamp-3">
+                                                        {practice.content}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            <div className="text-xs text-gray-500">No exercises added yet.</div>
+                                          )}
+                                        </div>
+
+                                        <div>
+                                          <div className="font-semibold text-gray-600 mb-2">Quizzes</div>
+                                          {quizzes.length > 0 ? (
+                                            <div className="space-y-2">
+                                              {quizzes.map((quiz, quizIndex) => (
+                                                <div
+                                                  key={(quiz as any)?.id || `${section.id}-quiz-${quizIndex}`}
+                                                  className="flex items-start gap-2 rounded-lg bg-white p-2"
+                                                >
+                                                  <HelpCircle className="h-4 w-4 text-orange-500 mt-0.5" />
+                                                  <div>
+                                                    <div className="font-medium text-gray-800">
+                                                      {(quiz as any)?.title || `Quiz ${quizIndex + 1}`}
+                                                    </div>
+                                                    {Array.isArray((quiz as any)?.questions) && (
+                                                      <div className="text-xs text-gray-500">
+                                                        {(quiz as any).questions.length} question{(quiz as any).questions.length === 1 ? '' : 's'}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          ) : (
+                                            <div className="text-xs text-gray-500">No quizzes added yet.</div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
-                                  <div className="flex items-center gap-1">
-                                    {section.lecture && (
-                                      <div className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
-                                        <PlayCircle className="h-3 w-3" />
-                                        <span>Lecture</span>
-                                      </div>
-                                    )}
-                                    {section.practices.length > 0 && (
-                                      <div className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
-                                        <PenTool className="h-3 w-3" />
-                                        <span>{section.practices.length}</span>
-                                      </div>
-                                    )}
-                                    {section.quiz && (
-                                      <div className="flex items-center gap-1 px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">
-                                        <HelpCircle className="h-3 w-3" />
-                                        <span>Quiz</span>
-                                      </div>
-                                    )}
-                                    <button 
-                                      className="p-1 hover:bg-gray-200 rounded"
-                                      onClick={() => onEditSection(module.id, section)}
-                                      title="Edit Section"
-                                    >
-                                      <Edit className="h-3 w-3 text-gray-400" />
-                                    </button>
-                                    <button className="p-1 hover:bg-gray-200 rounded">
-                                      <Trash2 className="h-3 w-3 text-red-400" />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -1644,11 +2098,18 @@ function SectionModal({
     id: string;
     title: string;
     content: string;
+    description?: string;
+    instructions?: string;
     difficulty: "easy" | "medium" | "hard";
-    type: "practice" | "assignment" | "lab" | "project";
+    type: "practice" | "assignment" | "lab" | "project" | "practical" | "coding";
     timeLimit?: number;
     passingScore?: number;
     maxAttempts?: number;
+    points?: number;
+    starterCode?: string;
+    expectedOutput?: string;
+    language?: string;
+    order_index?: number;
   };
 
   type LectureForm = {
@@ -1658,6 +2119,7 @@ function SectionModal({
     type: "text" | "video" | "image" | "audio" | "pdf";
     duration?: number;
     url?: string;
+    order_index?: number;
   };
   const [formData, setFormData] = useState({
     title: section?.title || "",
@@ -1706,16 +2168,33 @@ function SectionModal({
   // Prefill exercise builder with existing exercises on edit
   useEffect(() => {
     if (section?.practices && Array.isArray(section.practices) && section.practices.length > 0) {
-      const items: ExerciseForm[] = (section.practices as Record<string, unknown>[]).map((e: Record<string, unknown>) => ({
-        id: e.id as string,
-        title: (e.title as string) || '',
-        content: (e.content as string) || '',
-        difficulty: (e.difficulty as "easy" | "medium" | "hard") || 'easy',
-        type: (e.type as "practice" | "assignment" | "lab" | "project") || 'practice',
-        timeLimit: e.time_limit as number,
-        passingScore: e.passing_score as number,
-        maxAttempts: e.max_attempts as number,
-      }));
+      const items: ExerciseForm[] = (section.practices as Record<string, unknown>[]).map((e: Record<string, unknown>, idx: number) => {
+        const parsed = parsePracticeContent(e.content);
+        const fallbackDifficulty = typeof e.difficulty === 'string' ? e.difficulty : undefined;
+        const fallbackType = typeof e.type === 'string' ? e.type : undefined;
+        const difficulty = (parsed.difficulty as 'easy' | 'medium' | 'hard') || (fallbackDifficulty as 'easy' | 'medium' | 'hard') || 'easy';
+        const exerciseType = (parsed.exerciseType as 'practice' | 'assignment' | 'lab' | 'project' | 'practical' | 'coding') || (fallbackType as 'practice' | 'assignment' | 'lab' | 'project' | 'practical' | 'coding') || 'practical';
+        const timeLimit = parsed.timeLimit ?? (typeof e.time_limit === 'number' ? e.time_limit : undefined);
+        const passingScore = parsed.passingScore ?? (typeof e.passing_score === 'number' ? e.passing_score : undefined);
+        const maxAttempts = parsed.maxAttempts ?? (typeof e.max_attempts === 'number' ? e.max_attempts : undefined);
+        return {
+          id: e.id as string,
+          title: (e.title as string) || '',
+          description: parsed.description,
+          content: parsed.description,
+          instructions: parsed.instructions,
+          difficulty,
+          type: exerciseType,
+          points: parsed.points,
+          timeLimit,
+          starterCode: parsed.starterCode,
+          expectedOutput: parsed.expectedOutput,
+          language: parsed.language ?? 'python',
+          passingScore,
+          maxAttempts,
+          order_index: (e.order_index as number) ?? idx + 1,
+        };
+      });
       setFormData(prev => ({
         ...prev,
         hasExercise: true,
@@ -1729,23 +2208,26 @@ function SectionModal({
 
   // Prefill lecture builder with existing lectures on edit
   useEffect(() => {
-    if (section?.lecture) {
-      const lectureItem: LectureForm = {
-        id: section.lecture.id as string || `lecture-${Date.now()}`,
-        title: (section.lecture.title as string) || '',
-        content: (section.lecture.content as string) || '',
-        type: (section.lecture.type as "text" | "video" | "image" | "audio" | "pdf") || 'text',
-        duration: section.lecture.duration as number,
-        url: (section.lecture.url as string) || '',
-      };
+    if (section?.lectures && Array.isArray(section.lectures) && section.lectures.length > 0) {
+      const lectureItems: LectureForm[] = section.lectures.map((lecture: any, idx: number) => {
+        const parsed = parseLectureContent(lecture.content);
+        return {
+          id: lecture.id || `lecture-${Date.now()}-${idx}`,
+          title: lecture.title || '',
+          content: parsed.body,
+          type: parsed.type,
+          duration: parsed.duration ?? 0,
+          url: parsed.url || '',
+        };
+      });
       setFormData(prev => ({
         ...prev,
         hasLecture: true,
-        lectureTitle: lectureItem.title || prev.lectureTitle,
-        lectureContent: lectureItem.content || prev.lectureContent,
-        lectureType: lectureItem.type || prev.lectureType,
-        lectureDuration: lectureItem.duration || prev.lectureDuration,
-        lectureItems: [lectureItem],
+        lectureTitle: lectureItems[0]?.title || prev.lectureTitle,
+        lectureContent: lectureItems[0]?.content || prev.lectureContent,
+        lectureType: lectureItems[0]?.type || prev.lectureType,
+        lectureDuration: lectureItems[0]?.duration || prev.lectureDuration,
+        lectureItems,
       }));
     }
   }, [section]);

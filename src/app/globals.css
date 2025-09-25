@@ -1,3 +1,28 @@
+/* Slim global scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.45);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.55);
+}
+
+*::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
