@@ -23,6 +23,28 @@ export default async function AssessmentStartPage({
   const { data: { user } } = await sb.auth.getUser();
   if (!user) redirect("/login");
 
+  let selectedSubjectIds: string[] = [];
+  try {
+    const selection = await apiGet<{ selected_subjects?: string[] | null }>("/v1/subject-selection/selected");
+    selectedSubjectIds = Array.isArray(selection?.selected_subjects)
+      ? selection.selected_subjects.filter((value) => typeof value === "string" && value.trim().length > 0)
+      : [];
+  } catch {
+    selectedSubjectIds = [];
+  }
+
+  if (selectedSubjectIds.length === 0) {
+    try {
+      const available = await apiGet<{ subjects?: unknown[] }>("/v1/subject-selection/available");
+      const subjectsList = Array.isArray(available?.subjects) ? available.subjects : [];
+      if (subjectsList.length > 0) {
+        redirect("/subjects");
+      }
+    } catch {
+      // Ignore errors and allow assessment to continue
+    }
+  }
+
   // Determine if we should hide navigation for first-time assessment
   let hideNav = false;
   const firstParam = (() => {

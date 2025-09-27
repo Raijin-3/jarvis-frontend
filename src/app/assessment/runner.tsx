@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/lib/toast";
 import { useRouter } from "next/navigation";
@@ -35,20 +35,25 @@ type BaseQuestion = {
   imageUrl: string | null;
   rawType?: string | null;
   timeLimit: number | null;
+  moduleId: string | null;
 };
 type Question =
   | (BaseQuestion & { type: "mcq"; options: string[] })
   | (BaseQuestion & { type: "text" });
-type StartPayload = { assessment_id: string; questions: Question[] };
+type StartPayload = { assessment_id: string; questions: Question[]; lockedModules?: string[] };
 export function AssessmentRunner() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<StartPayload | null>(null);
-  const [idx, setIdx] = useState(0);
+  const [queue, setQueue] = useState<number[]>([]);
+  const [position, setPosition] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string | null>>({});
+  const [skippedQuestions, setSkippedQuestions] = useState<Record<string, boolean>>({});
   const [secondsLeft, setSecondsLeft] = useState(60);
   const [submitting, setSubmitting] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const moduleMistakesRef = useRef<Record<string, number>>({});
+  const lockedModulesRef = useRef<Record<string, boolean>>({});
   // If this page was opened with ?first=1, clear the one-time redirect cookie
   useEffect(() => {
     try {
@@ -76,7 +81,29 @@ export function AssessmentRunner() {
       }
     })();
   }, [router]);
-  const current = useMemo(() => data?.questions[idx], [data, idx]);
+  useEffect(() => {
+    if (!data) return;
+    const questionOrder = data.questions.map((_, index) => index);
+    setQueue(questionOrder);
+    setPosition(0);
+    setSkippedQuestions({});
+    setAnswers({});
+    moduleMistakesRef.current = {};
+    
+    // Initialize locked modules from backend
+    const initialLockedModules: Record<string, boolean> = {};
+    if (data.lockedModules) {
+      data.lockedModules.forEach(moduleId => {
+        initialLockedModules[moduleId] = true;
+      });
+    }
+    lockedModulesRef.current = initialLockedModules;
+  }, [data?.assessment_id]);
+  const currentQuestionIndex = useMemo(() => (queue.length > 0 ? queue[position] ?? null : null), [queue, position]);
+  const current = useMemo(() => {
+    if (!data || currentQuestionIndex === null || currentQuestionIndex === undefined) return undefined;
+    return data.questions[currentQuestionIndex];
+  }, [data, currentQuestionIndex]);
   const imageSrc = useMemo(() => normalizeQuestionImageUrl(current?.imageUrl), [current?.imageUrl]);
   useEffect(() => {
     setImageError(false);
@@ -88,74 +115,29 @@ export function AssessmentRunner() {
     return limit > 0 ? limit : 60;
   }, [current]);
   const progressPct = useMemo(() => {
-    if (!data) return 0;
-    return Math.round((idx / data.questions.length) * 100);
-  }, [data, idx]);
+    if (!queue.length) return 0;
+    return Math.round((position / queue.length) * 100);
+  }, [queue.length, position]);
   const timeProgressPct = useMemo(() => {
     if (currentTimeLimit <= 0) return 0;
     const pct = ((currentTimeLimit - secondsLeft) / currentTimeLimit) * 100;
     if (Number.isNaN(pct)) return 0;
     return Math.min(100, Math.max(0, pct));
   }, [currentTimeLimit, secondsLeft]);
-  // timer per question
-  useEffect(() => {
-    if (loading || !data) return;
-    setSecondsLeft(currentTimeLimit);
-    const t = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) {
-          clearInterval(t);
-          handleNext();
-          return currentTimeLimit;
-        }
-        return s - 1;
-      });
-    }, 1000);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, loading, data?.assessment_id, currentTimeLimit]);
-  const setAnswer = (qid: string, val: string | null) => {
-    setAnswers((a) => ({ ...a, [qid]: val }));
-  };
-  // console.log(setAnswer);
-  const handleNext = () => {
-    if (!data) return;
-    if (idx + 1 < data.questions.length) setIdx(idx + 1);
-    else void finish();
-  };
-  const handleSkip = () => {
-    if (!data) return;
-    const q = data.questions[idx];
-    console.log(q);
-    setAnswer(q.id, null);
-    handleNext();
-  };
-  // keyboard shortcuts: Right/Enter -> next, Esc -> skip
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (submitting) return;
-      if (e.key === "ArrowRight" || e.key === "Enter") {
-        e.preventDefault();
-        handleNext();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        handleSkip();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [submitting]);
-  const finish = async () => {
+  const totalActiveQuestions = queue.length;
+  const currentQuestionNumber = totalActiveQuestions > 0 ? Math.min(position + 1, totalActiveQuestions) : 0;
+  
+  const finish = useCallback(async () => {
     if (!data) return;
     setSubmitting(true);
     try {
       const responses = data.questions.map((q, i) => ({
         q_index: i,
         question_id: q.id,
-        answer: answers[q.id] ?? null
+        answer: answers[q.id] ?? null,
+        skipped: skippedQuestions[q.id] ?? false,
       }));
 
-      console.log("Submitting assessment responses:", responses);
       const res = await fetch("/api/assessment/finish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -164,11 +146,12 @@ export function AssessmentRunner() {
       const text = await res.text();
       const summary = text ? JSON.parse(text) : null;
       if (!res.ok || !summary) throw new Error(text || "No response");
+      const skippedCount = summary.skipped ?? 0;
+      const skippedNote = skippedCount > 0 ? ` | ${skippedCount} skipped` : "";
       toast.success(
-        `Completed: ${summary.correct}/${summary.total} (${summary.score}%)`,
+        `Completed: ${summary.correct}/${summary.total} (${summary.score}%)${skippedNote}`,
       );
 
-      // Refresh user's learning paths based on new assessment results
       try {
         await fetch("/api/learning-paths/user/refresh", {
           method: "POST",
@@ -177,11 +160,9 @@ export function AssessmentRunner() {
         console.log("Learning paths refreshed with new assessment data");
       } catch (refreshError) {
         console.warn("Failed to refresh learning paths:", refreshError);
-        // Don't block the flow if refresh fails
       }
 
-      // Check if this is first assessment by looking for ?first=1 in URL
-      const isFirstAssessment = window.location.search.includes("first=1");
+      const isFirstAssessment = typeof window !== "undefined" && window.location.search.includes("first=1");
       if (isFirstAssessment) {
         router.replace("/learning-path?first=1");
       } else {
@@ -192,7 +173,154 @@ export function AssessmentRunner() {
     } finally {
       setSubmitting(false);
     }
+  }, [answers, data, router, skippedQuestions]);
+
+  const handleNext = useCallback(
+    async (options?: { skipCurrent?: boolean }) => {
+      if (!data || submitting) return;
+      const currentIndex = queue[position];
+      if (currentIndex === undefined) {
+        await finish();
+        return;
+      }
+      const question = data.questions[currentIndex];
+      if (!question) {
+        await finish();
+        return;
+      }
+
+      const skipCurrent = options?.skipCurrent ?? Boolean(skippedQuestions[question.id]);
+      if (skipCurrent) {
+        setSkippedQuestions((prev) => (prev[question.id] ? prev : { ...prev, [question.id]: true }));
+        setAnswers((prev) => ({ ...prev, [question.id]: null }));
+      }
+
+      let evaluation: { correct: boolean; moduleId: string | null } | null = null;
+
+      if (!skipCurrent) {
+        try {
+          const res = await fetch('/api/assessment/evaluate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              question_id: question.id,
+              answer: answers[question.id] ?? null,
+              skipped: false,
+            }),
+          });
+          const text = await res.text();
+          const json = text ? JSON.parse(text) : null;
+          if (!res.ok) {
+            throw new Error(json?.error || text || 'Failed to evaluate answer');
+          }
+          evaluation = json;
+        } catch (error) {
+          console.error('Failed to evaluate assessment response', error);
+          evaluation = null;
+        }
+      }
+
+      let updatedQueue = queue;
+
+      if (evaluation && evaluation.moduleId) {
+        const moduleId = evaluation.moduleId;
+        const currentMistakes = moduleMistakesRef.current[moduleId] ?? 0;
+        const nextMistakes = evaluation.correct ? currentMistakes : currentMistakes + 1;
+        moduleMistakesRef.current[moduleId] = nextMistakes;
+
+        if (!evaluation.correct && nextMistakes >= 2 && !lockedModulesRef.current[moduleId]) {
+          lockedModulesRef.current[moduleId] = true;
+          const toSkipIndices: number[] = [];
+          data.questions.forEach((q, idx) => {
+            if (idx > currentIndex && q.moduleId === moduleId) {
+              toSkipIndices.push(idx);
+            }
+          });
+
+          if (toSkipIndices.length) {
+            const toSkipSet = new Set(toSkipIndices);
+            setSkippedQuestions((prev) => {
+              const next = { ...prev };
+              toSkipIndices.forEach((idx) => {
+                const qId = data.questions[idx].id;
+                next[qId] = true;
+              });
+              return next;
+            });
+            setAnswers((prev) => {
+              const next = { ...prev };
+              toSkipIndices.forEach((idx) => {
+                const qId = data.questions[idx].id;
+                next[qId] = null;
+              });
+              return next;
+            });
+            const filteredQueue = queue.filter((idx) => idx <= currentIndex || !toSkipSet.has(idx));
+            if (filteredQueue.length !== queue.length) {
+              updatedQueue = filteredQueue;
+              setQueue(filteredQueue);
+            }
+          }
+        }
+      }
+
+      const nextPosition = position + 1;
+      if (nextPosition < updatedQueue.length) {
+        setPosition(nextPosition);
+      } else {
+        await finish();
+      }
+    },
+    [answers, data, finish, position, queue, skippedQuestions, submitting],
+  );
+
+  // timer per question
+  useEffect(() => {
+    if (loading || !data) return;
+    setSecondsLeft(currentTimeLimit);
+    const t = setInterval(() => {
+      setSecondsLeft((s) => {
+        if (s <= 1) {
+          clearInterval(t);
+          void handleNext();
+          return currentTimeLimit;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [position, queue, loading, data?.assessment_id, currentTimeLimit, handleNext]);
+  
+  const setAnswer = (qid: string, val: string | null) => {
+    setAnswers((a) => ({ ...a, [qid]: val }));
   };
+  // console.log(setAnswer);
+  const handleSkip = useCallback(() => {
+    if (!data) return;
+    const currentIndex = queue[position];
+    if (currentIndex === undefined) return;
+    const q = data.questions[currentIndex];
+    if (!q) return;
+    setSkippedQuestions((prev) => (prev[q.id] ? prev : { ...prev, [q.id]: true }));
+    setAnswers((prev) => ({ ...prev, [q.id]: null }));
+    void handleNext({ skipCurrent: true });
+  }, [data, handleNext, position, queue]);
+  // keyboard shortcuts: Right/Enter -> next, Esc -> skip
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (submitting) return;
+      if (e.key === "ArrowRight" || e.key === "Enter") {
+        e.preventDefault();
+        void handleNext();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        handleSkip();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleNext, handleSkip, submitting]);
   if (!loading && data && data.questions.length === 0) {
     return (
       <div className="mx-auto max-w-xl p-4 md:p-6">
@@ -220,7 +348,7 @@ export function AssessmentRunner() {
           <div className="mb-3 flex items-center justify-between text-sm">
             <div className="inline-flex items-center gap-2">
               <span className="inline-flex h-6 items-center rounded-full border border-border bg-white/70 px-2 font-medium">
-                Q{idx + 1} / {data.questions.length}
+                Q{currentQuestionNumber} / {totalActiveQuestions || 0}
               </span>
               <div className="hidden items-center gap-2 sm:inline-flex">
                 <span className="text-muted-foreground">Progress</span>
@@ -363,8 +491,8 @@ export function AssessmentRunner() {
             <div className="text-xs text-muted-foreground">
               Press Right Arrow for Next, Esc to Skip
             </div>
-            {idx + 1 < data.questions.length ? (
-              <Button onClick={handleNext} disabled={submitting}>
+            {position + 1 < totalActiveQuestions ? (
+              <Button onClick={() => void handleNext()} disabled={submitting}>
                 Next
               </Button>
             ) : (
@@ -381,10 +509,10 @@ export function AssessmentRunner() {
           <Button variant="ghost" onClick={handleSkip} disabled={submitting}>
             Skip
           </Button>
-          {idx + 1 < data.questions.length ? (
+          {position + 1 < totalActiveQuestions ? (
             <Button
               className="min-w-28"
-              onClick={handleNext}
+              onClick={() => void handleNext()}
               disabled={submitting}
             >
               Next

@@ -30,13 +30,15 @@ export default async function DashboardPage() {
   // Check user onboarding flow
   const profile = await apiGet<any>("/v1/profile").catch(() => null)
   
-  // For new student accounts with onboarding false, follow the sequence: profile → assessment → learning path
+  // For new student accounts with onboarding false, redirect to profile
   if (!profile?.onboarding_completed) {
     // Always redirect to profile first for new students
     redirect("/profile")
   }
 
-  // Second: Client-side one-time redirect to assessment after profile completion
+  // If onboarding is completed, user stays on dashboard
+
+  // Client-side one-time redirect to assessment after profile completion
   const shouldCheckFirstAssessment = !profile?.assessment_completed_at
 
   let data: DashboardData

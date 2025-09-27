@@ -24,16 +24,12 @@ export default async function LoginPage() {
       // Teacher goes to teacher page
       if (role === 'teacher') redirect('/teacher')
       
-      // Student flow: profile -> assessment -> learning path -> dashboard
+      // Student flow: if onboarding completed, go to dashboard
       const onboardingCompleted = Boolean(p?.onboarding_completed)
-      const assessmentCompleted = Boolean(p?.assessment_completed_at)
-      const learningPathSet = Boolean(p?.learning_path_preference)
       
       if (!onboardingCompleted) redirect("/profile")
-      if (!assessmentCompleted) redirect("/assessment") 
-      if (!learningPathSet) redirect("/learning-path")
       
-      // All completed - go to dashboard
+      // Onboarding completed - go to dashboard
       redirect("/dashboard")
     } catch {
       // If profile fetch fails, send to dashboard; dashboard will guard and redirect if needed

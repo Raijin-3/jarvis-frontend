@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
 import { useForm } from "react-hook-form";
@@ -324,12 +324,12 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
         if (!r.ok) throw new Error(text || "Request failed");
         return text ? JSON.parse(text) : null;
       }), {
-      loading: "Setting up your profile…",
+      loading: "Setting up your profile...",
       success: "Welcome to Jarvis!",
       error: (e) => (e as Error).message || "Failed to save",
     });
     // Redirect to assessment/start after profile completion for new students
-    router.replace("/assessment/start?first=1");
+    router.replace("/subjects");
   };
 
   const stepProgress = ((currentStep + 1) / steps.length) * 100;
@@ -815,4 +815,5 @@ export function ProfileForm({ initial }: { initial: Partial<z.infer<typeof schem
     </div>
   );
 }
+
 

@@ -107,16 +107,12 @@ export function LoginForm() {
             // Teacher goes to teacher page  
             if (role === 'teacher') { router.push('/teacher'); return }
             
-            // Student flow: profile -> assessment -> learning path -> dashboard
+            // Student flow: if onboarding completed, go to dashboard
             const onboardingCompleted = Boolean(profile?.onboarding_completed)
-            const assessmentCompleted = Boolean(profile?.assessment_completed_at)
-            const learningPathSet = Boolean(profile?.learning_path_preference)
             
             if (!onboardingCompleted) { router.push('/profile'); return }
-            if (!assessmentCompleted) { router.push('/assessment'); return }
-            if (!learningPathSet) { router.push('/learning-path'); return }
             
-            // All completed - go to dashboard
+            // Onboarding completed - go to dashboard
             router.push('/dashboard'); return
           }
         }
@@ -163,25 +159,15 @@ export function LoginForm() {
             return
           }
           
-          // Student flow: profile -> assessment -> learning path -> dashboard
+          // Student flow: if onboarding completed, go to dashboard
           const onboardingCompleted = Boolean(profile?.onboarding_completed)
-          const assessmentCompleted = Boolean(profile?.assessment_completed_at)
-          const learningPathSet = Boolean(profile?.learning_path_preference)
           
           if (!onboardingCompleted) {
             router.push('/profile')
             return
           }
-          if (!assessmentCompleted) {
-            router.push('/assessment')
-            return
-          }
-          if (!learningPathSet) {
-            router.push('/learning-path')
-            return
-          }
           
-          // All completed - go to dashboard
+          // Onboarding completed - go to dashboard
           router.push('/dashboard')
         } else {
           // If profile fetch fails, redirect to dashboard - dashboard will handle further redirects
