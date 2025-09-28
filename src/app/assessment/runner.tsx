@@ -36,11 +36,12 @@ type BaseQuestion = {
   rawType?: string | null;
   timeLimit: number | null;
   moduleId: string | null;
+  subjectId: string | null;
 };
 type Question =
   | (BaseQuestion & { type: "mcq"; options: string[] })
   | (BaseQuestion & { type: "text" });
-type StartPayload = { assessment_id: string; questions: Question[]; lockedModules?: string[] };
+type StartPayload = { assessment_id: string; questions: Question[]; lockedModules?: string[]; lockedSubjects?: string[] };
 export function AssessmentRunner() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -52,8 +53,8 @@ export function AssessmentRunner() {
   const [secondsLeft, setSecondsLeft] = useState(60);
   const [submitting, setSubmitting] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const moduleMistakesRef = useRef<Record<string, number>>({});
-  const lockedModulesRef = useRef<Record<string, boolean>>({});
+  const subjectMistakesRef = useRef<Record<string, number>>({});
+  const lockedSubjectsRef = useRef<Record<string, boolean>>({});
   // If this page was opened with ?first=1, clear the one-time redirect cookie
   useEffect(() => {
     try {
@@ -88,16 +89,16 @@ export function AssessmentRunner() {
     setPosition(0);
     setSkippedQuestions({});
     setAnswers({});
-    moduleMistakesRef.current = {};
+    subjectMistakesRef.current = {};
     
-    // Initialize locked modules from backend
-    const initialLockedModules: Record<string, boolean> = {};
-    if (data.lockedModules) {
-      data.lockedModules.forEach(moduleId => {
-        initialLockedModules[moduleId] = true;
+    // Initialize locked subjects from backend
+    const initialLockedSubjects: Record<string, boolean> = {};
+    if (data.lockedSubjects) {
+      data.lockedSubjects.forEach(subjectId => {
+        initialLockedSubjects[subjectId] = true;
       });
     }
-    lockedModulesRef.current = initialLockedModules;
+    lockedSubjectsRef.current = initialLockedSubjects;
   }, [data?.assessment_id]);
   const currentQuestionIndex = useMemo(() => (queue.length > 0 ? queue[position] ?? null : null), [queue, position]);
   const current = useMemo(() => {
@@ -195,7 +196,7 @@ export function AssessmentRunner() {
         setAnswers((prev) => ({ ...prev, [question.id]: null }));
       }
 
-      let evaluation: { correct: boolean; moduleId: string | null } | null = null;
+      let evaluation: { correct: boolean; moduleId: string | null; subjectId: string | null } | null = null;
 
       if (!skipCurrent) {
         try {
@@ -222,17 +223,17 @@ export function AssessmentRunner() {
 
       let updatedQueue = queue;
 
-      if (evaluation && evaluation.moduleId) {
-        const moduleId = evaluation.moduleId;
-        const currentMistakes = moduleMistakesRef.current[moduleId] ?? 0;
+      if (evaluation && evaluation.subjectId) {
+        const subjectId = evaluation.subjectId;
+        const currentMistakes = subjectMistakesRef.current[subjectId] ?? 0;
         const nextMistakes = evaluation.correct ? currentMistakes : currentMistakes + 1;
-        moduleMistakesRef.current[moduleId] = nextMistakes;
+        subjectMistakesRef.current[subjectId] = nextMistakes;
 
-        if (!evaluation.correct && nextMistakes >= 2 && !lockedModulesRef.current[moduleId]) {
-          lockedModulesRef.current[moduleId] = true;
+        if (!evaluation.correct && nextMistakes >= 2 && !lockedSubjectsRef.current[subjectId]) {
+          lockedSubjectsRef.current[subjectId] = true;
           const toSkipIndices: number[] = [];
           data.questions.forEach((q, idx) => {
-            if (idx > currentIndex && q.moduleId === moduleId) {
+            if (idx > currentIndex && q.subjectId === subjectId) {
               toSkipIndices.push(idx);
             }
           });
@@ -478,7 +479,10 @@ export function AssessmentRunner() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setAnswer(current.id, "")}
+                    onClick={() => {
+                      setAnswer(current.id, "");
+                      handleSkip();
+                    }}
                   >
                     Don't Know
                   </Button>
