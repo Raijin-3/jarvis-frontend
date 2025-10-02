@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
+  transpilePackages: ['@supabase/supabase-js'],
   typescript: {
     // !! WARN !!
     // Dangerously allow production builds to successfully complete even if
@@ -13,6 +14,14 @@ const nextConfig: NextConfig = {
     // Warning: This allows production builds to successfully complete even if
     // your project has ESLint errors.
     ignoreDuringBuilds: true,
+  },
+  // Disable source maps to prevent 404 errors for source files
+  productionBrowserSourceMaps: false,
+  webpack: (config, { dev, isServer }) => {
+    if (dev && !isServer) {
+      config.devtool = false;
+    }
+    return config;
   },
 };
 

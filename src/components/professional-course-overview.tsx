@@ -359,11 +359,21 @@ export function ProfessionalCourseOverview({
         {filteredSubjects.map((subject) => {
           const TypeIcon = getTypeIcon(subject.type);
           
+          // Helper function to slugify titles for URL-friendly names
+          const slugify = (text: string): string => {
+            return text
+              .toLowerCase()
+              .trim()
+              .replace(/[^\w\s-]/g, '') // Remove non-word chars
+              .replace(/[\s_-]+/g, '-') // Replace spaces, underscores with single dash
+              .replace(/^-+|-+$/g, ''); // Remove leading/trailing dashes
+          };
+
           if (viewMode === 'list') {
             return (
               <Link
                 key={subject.id}
-                href={`/curriculum/${courseId}/${subject.id}`}
+                href={`/curriculum/${courseId}/${encodeURIComponent(slugify(subject.title))}`}
                 className="group block"
               >
                 <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-6 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all">
@@ -426,7 +436,7 @@ export function ProfessionalCourseOverview({
           return (
             <Link
               key={subject.id}
-              href={`/curriculum/${courseId}/${subject.id}`}
+              href={`/curriculum/${courseId}/${encodeURIComponent(slugify(subject.title))}`}
               className="group block"
             >
               <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all overflow-hidden">

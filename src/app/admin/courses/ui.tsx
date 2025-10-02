@@ -1607,7 +1607,7 @@ function CourseSettingsTab({ course, onChanged }: { course: CourseFull; onChange
             {isEditing ? (
               <select 
                 value={formData.status}
-                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as "draft" | "published" | "archived" }))}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2"
               >
                 <option value="draft">Draft</option>
@@ -1865,18 +1865,30 @@ function ModuleContentView({
 
   async function saveQuiz(section: Section, data: { title: string }) {
     try {
-      const res = await fetch(`/api/admin/sections/${section.id}/quiz`, {
+      // Use quiz generation instead of manual creation
+      const res = await fetch(`/api/admin/sections/${section.id}/generate-and-add-quiz`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: data.title, questions: [] }),
+        body: JSON.stringify({
+          title: data.title,
+          order: 1,
+          generationInput: {
+            main_topic: section.title, // Use section title as topic
+            topic_hierarchy: "General Learning",
+            Student_level_in_topic: "intermediate",
+            question_number: 1,
+            target_len: 5,
+            conversation_history: []
+          }
+        }),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json?.error || 'Failed to save quiz');
+      if (!res.ok) throw new Error(json?.error || 'Failed to generate quiz');
       section.quiz = unwrapData<any>(json) as any;
       onChanged();
-      toast.success('Quiz saved');
+      toast.success('Quiz generated and saved');
     } catch (e: any) {
-      toast.error(e?.message || 'Failed to save quiz');
+      toast.error(e?.message || 'Failed to generate quiz');
     }
   }
 
@@ -2829,4 +2841,3 @@ function AddSectionModal({
     </div>
   );
 }
-

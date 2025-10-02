@@ -183,30 +183,6 @@ export function LoginForm() {
     }
   }
 
-  const oauth = async (provider: "github" | "google") => {
-    setIsLoading(true)
-    try {
-      const { error } = await sb.auth.signInWithOAuth({ 
-        provider, 
-        options: { 
-          // Use a callback URL that will handle proper redirects
-          redirectTo: `${location.origin}/login`,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          }
-        } 
-      })
-      if (error) {
-        toast.error(error.message)
-        setIsLoading(false)
-      }
-    } catch (err) {
-      toast.error("OAuth sign-in failed")
-      setIsLoading(false)
-    }
-  }
-
   if (!mounted) {
     return null
   }
@@ -225,162 +201,83 @@ export function LoginForm() {
             <KeyRound className="h-8 w-8 text-white" />
           </div>
           <h2 className="text-2xl font-bold text-gray-900">Welcome back</h2>
-          <p className="mt-2 text-sm text-gray-600">Choose your role and sign in to continue</p>
+          <p className="mt-2 text-sm text-gray-600">Sign in to continue your learning journey</p>
         </div>
 
-        {/* Role Selection */}
-        <div className="mb-6">
-          <Label className="mb-4 block text-sm font-medium text-gray-700">Select your role</Label>
-          <Tabs value={roleTab} onValueChange={(v) => setRoleTab(v as RoleType)} className="w-full">
-            <TabsList className="grid h-auto w-full grid-cols-3 gap-2 bg-gray-100/50 p-1">
-              {(Object.keys(roleConfig) as RoleType[]).map((role) => {
-                const config = roleConfig[role]
-                return (
-                  <TabsTrigger 
-                    key={role} 
-                    value={role}
-                    className="flex flex-col gap-2 p-3 data-[state=active]:bg-white data-[state=active]:shadow-sm capitalize"
-                  >
-                    <div className={`rounded-lg p-2 bg-gradient-to-r ${config.color}`}>
-                      {config.icon}
-                    </div>
-                    <span className="text-xs font-medium">{role}</span>
-                  </TabsTrigger>
-                )
-              })}
-            </TabsList>
-            
-            {/* Role Description */}
-            <div className={`mt-4 rounded-lg border p-3 ${roleConfig[roleTab].bgColor} ${roleConfig[roleTab].borderColor}`}>
-              <p className={`text-sm ${roleConfig[roleTab].textColor}`}>
-                {roleConfig[roleTab].description}
-              </p>
+        <form className="space-y-6" onSubmit={form.handleSubmit(submit)}>
+          <div className="space-y-2">
+            <Label htmlFor="lemail" className="text-sm font-medium text-gray-700">
+              Email address
+            </Label>
+            <Input 
+              id="lemail" 
+              type="email" 
+              placeholder="Enter your email"
+              inputMode="email" 
+              autoComplete="email"
+              className="h-12 rounded-xl border-gray-200 bg-white/80 px-4 text-gray-900 placeholder:text-gray-400 focus:border-indigo-500 focus:ring-indigo-500"
+              {...form.register("email")} 
+            />
+            {form.formState.errors.email && (
+              <p className="text-sm text-red-600">{form.formState.errors.email.message}</p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="lpass" className="text-sm font-medium text-gray-700">
+              Password
+            </Label>
+            <div className="relative">
+              <Input 
+                id="lpass" 
+                type={showPass ? "text" : "password"} 
+                placeholder="Enter your password"
+                autoComplete="current-password"
+                className="h-12 rounded-xl border-gray-200 bg-white/80 px-4 pr-12 text-gray-900 placeholder:text-gray-400 focus:border-indigo-500 focus:ring-indigo-500"
+                {...form.register("password")} 
+              />
+              <button 
+                type="button" 
+                aria-label={showPass ? "Hide password" : "Show password"} 
+                className="absolute inset-y-0 right-4 inline-flex items-center text-gray-400 hover:text-gray-600 transition-colors"
+                onClick={() => setShowPass(!showPass)}
+              >
+                {showPass ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+              </button>
             </div>
+            {form.formState.errors.password && (
+              <p className="text-sm text-red-600">{form.formState.errors.password.message}</p>
+            )}
+          </div>
 
-            <TabsContent value={roleTab} className="mt-6">
-              <form className="space-y-6" onSubmit={form.handleSubmit(submit)}>
-                <div className="space-y-2">
-                  <Label htmlFor="lemail" className="text-sm font-medium text-gray-700">
-                    Email address
-                  </Label>
-                  <Input 
-                    id="lemail" 
-                    type="email" 
-                    placeholder="Enter your email"
-                    inputMode="email" 
-                    autoComplete="email"
-                    className="h-12 rounded-xl border-gray-200 bg-white/80 px-4 text-gray-900 placeholder:text-gray-400 focus:border-indigo-500 focus:ring-indigo-500"
-                    {...form.register("email")} 
-                  />
-                  {form.formState.errors.email && (
-                    <p className="text-sm text-red-600">{form.formState.errors.email.message}</p>
-                  )}
-                </div>
+          {/* Forgot Password Link */}
+          <div className="text-right">
+            <a 
+              href="/forgot-password" 
+              className="text-sm text-indigo-600 hover:text-indigo-500 transition-colors"
+            >
+              Forgot your password?
+            </a>
+          </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="lpass" className="text-sm font-medium text-gray-700">
-                    Password
-                  </Label>
-                  <div className="relative">
-                    <Input 
-                      id="lpass" 
-                      type={showPass ? "text" : "password"} 
-                      placeholder="Enter your password"
-                      autoComplete="current-password"
-                      className="h-12 rounded-xl border-gray-200 bg-white/80 px-4 pr-12 text-gray-900 placeholder:text-gray-400 focus:border-indigo-500 focus:ring-indigo-500"
-                      {...form.register("password")} 
-                    />
-                    <button 
-                      type="button" 
-                      aria-label={showPass ? "Hide password" : "Show password"} 
-                      className="absolute inset-y-0 right-4 inline-flex items-center text-gray-400 hover:text-gray-600 transition-colors"
-                      onClick={() => setShowPass(!showPass)}
-                    >
-                      {showPass ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                    </button>
-                  </div>
-                  {form.formState.errors.password && (
-                    <p className="text-sm text-red-600">{form.formState.errors.password.message}</p>
-                  )}
-                </div>
-
-                {/* Forgot Password Link */}
-                <div className="text-right">
-                  <a 
-                    href="/forgot-password" 
-                    className="text-sm text-indigo-600 hover:text-indigo-500 transition-colors"
-                  >
-                    Forgot your password?
-                  </a>
-                </div>
-
-                <Button 
-                  className={`group h-12 w-full rounded-xl bg-gradient-to-r ${roleConfig[roleTab].color} text-white shadow-lg transition-all hover:shadow-xl hover:scale-[1.02] disabled:scale-100 disabled:opacity-70`}
-                  type="submit" 
-                  disabled={isLoading || form.formState.isSubmitting}
-                >
-                  {isLoading || form.formState.isSubmitting ? (
-                    <>
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      Signing in...
-                    </>
-                  ) : (
-                    <>
-                      Sign in as {roleTab}
-                      <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" />
-                    </>
-                  )}
-                </Button>
-              </form>
-
-              {/* Divider */}
-              <div className="relative my-8">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-200" />
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="bg-white px-4 text-gray-500">or continue with</span>
-                </div>
-              </div>
-
-              {/* OAuth Buttons */}
-              <div className="grid grid-cols-2 gap-3">
-                <Button 
-                  type="button" 
-                  variant="outline"
-                  onClick={() => oauth("github")} 
-                  disabled={isLoading}
-                  className="group h-12 rounded-xl border-gray-200 bg-white/80 hover:bg-gray-50 transition-all hover:scale-[1.02]"
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <>
-                      <Github className="mr-2 h-5 w-5 transition-transform group-hover:scale-110" />
-                      GitHub
-                    </>
-                  )}
-                </Button>
-                <Button 
-                  type="button" 
-                  variant="outline"
-                  onClick={() => oauth("google")} 
-                  disabled={isLoading}
-                  className="group h-12 rounded-xl border-gray-200 bg-white/80 hover:bg-gray-50 transition-all hover:scale-[1.02]"
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <>
-                      <Mail className="mr-2 h-5 w-5 transition-transform group-hover:scale-110" />
-                      Google
-                    </>
-                  )}
-                </Button>
-              </div>
-            </TabsContent>
-          </Tabs>
-        </div>
+          <Button 
+            className="group h-12 w-full rounded-xl bg-gradient-to-r from-indigo-500 to-emerald-500 text-white shadow-lg transition-all hover:shadow-xl hover:scale-[1.02] disabled:scale-100 disabled:opacity-70"
+            type="submit" 
+            disabled={isLoading || form.formState.isSubmitting}
+          >
+            {isLoading || form.formState.isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                Signing in...
+              </>
+            ) : (
+              <>
+                Sign in
+                <ArrowRight className="ml-2 h-5 w-5 transition-transform group-hover:translate-x-1" />
+              </>
+            )}
+          </Button>
+        </form>
       </div>
     </div>
   )

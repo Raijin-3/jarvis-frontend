@@ -2709,13 +2709,30 @@ function SectionModal({
                                     })}
                                     className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm"
                                   >
-                                    <option value="python">Python</option>
-                                    <option value="javascript">JavaScript</option>
-                                    <option value="java">Java</option>
-                                    <option value="c">C</option>
-                                    <option value="cpp">C++</option>
-                                    <option value="html">HTML</option>
-                                    <option value="css">CSS</option>
+                                    {/* Programming Languages */}
+                                    <optgroup label="Programming Languages">
+                                      <option value="python">🐍 Python</option>
+                                      <option value="javascript">🟨 JavaScript</option>
+                                      <option value="r">📊 R</option>
+                                      <option value="java">☕ Java</option>
+                                      <option value="c">C</option>
+                                      <option value="cpp">C++</option>
+                                    </optgroup>
+
+                                    {/* Data & Analytics */}
+                                    <optgroup label="Data Analytics & Databases">
+                                      <option value="sql">🗃️ SQL</option>
+                                      <option value="statistics">📈 Statistics</option>
+                                      <option value="excel">📋 Excel</option>
+                                      <option value="google_sheets">📊 Google Sheets</option>
+                                      <option value="power_bi">📊 Power BI</option>
+                                    </optgroup>
+
+                                    {/* Web Technologies */}
+                                    <optgroup label="Web Technologies">
+                                      <option value="html">🌐 HTML</option>
+                                      <option value="css">🎨 CSS</option>
+                                    </optgroup>
                                   </select>
                                 </div>
                                 <div>

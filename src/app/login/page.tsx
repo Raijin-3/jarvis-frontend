@@ -10,33 +10,7 @@ export const metadata = {
   description: "AI-powered learning platform authentication",
 }
 
-export default async function LoginPage() {
-  const sb = supabaseServer()
-  const { data: { user } } = await sb.auth.getUser()
-  if (user) {
-    try {
-      const p = await apiGet<any>("/v1/profile")
-      const role = String(p?.role || '').toLowerCase()
-      
-      // Admin goes directly to admin page
-      if (role === 'admin') redirect('/admin')
-      
-      // Teacher goes to teacher page
-      if (role === 'teacher') redirect('/teacher')
-      
-      // Student flow: if onboarding completed, go to dashboard
-      const onboardingCompleted = Boolean(p?.onboarding_completed)
-      
-      if (!onboardingCompleted) redirect("/profile")
-      
-      // Onboarding completed - go to dashboard
-      redirect("/dashboard")
-    } catch {
-      // If profile fetch fails, send to dashboard; dashboard will guard and redirect if needed
-      redirect("/dashboard")
-    }
-  }
-
+export default function LoginPage() {
   return (
     <div className="min-h-dvh relative overflow-hidden">
       {/* Animated Background */}

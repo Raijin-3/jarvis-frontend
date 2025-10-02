@@ -16,13 +16,157 @@ export function ProfessionalCourseTabs({
   sectionId,
   sectionTitle,
   section,
+  courseId,
+  subjectId,
+  trackTitle,
+  subjectTitle: subjectTitleProp,
 }: {
   courseHrefBase: string;
   sectionId?: string;
   sectionTitle?: string;
   section?: any;
+  courseId?: string;
+  subjectId?: string;
+  trackTitle?: string;
+  subjectTitle?: string;
 }) {
   const [activeTab, setActiveTab] = useState<"overview" | "exercise" | "quiz" | "discussion">("overview");
+  const [practiceExercises, setPracticeExercises] = useState<any[]>([]);
+  const [quizzes, setQuizzes] = useState<any[]>([]);
+  const [loadingExercises, setLoadingExercises] = useState(false);
+  const [loadingQuizzes, setLoadingQuizzes] = useState(false);
+
+  // API functions
+  const generatePracticeExercises = async () => {
+    if (!sectionId || !courseId || !subjectId) return;
+    
+    setLoadingExercises(true);
+    try {
+      const response = await fetch(`/api/v1/sections/${sectionId}/generate-exercises`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          courseId,
+          subjectId,
+          sectionTitle,
+          difficulty: 'Intermediate',
+          exerciseCount: 3,
+          exerciseTypes: ['sql', 'python']
+        }),
+      });
+      
+      if (response.ok) {
+        const exercises = await response.json();
+        setPracticeExercises(exercises);
+      }
+    } catch (error) {
+      console.error('Error generating exercises:', error);
+    } finally {
+      setLoadingExercises(false);
+    }
+  };
+
+  const generateQuiz = async () => {
+    if (!sectionId || !courseId || !subjectId) return;
+    
+    setLoadingQuizzes(true);
+    try {
+      console.log('Generating quiz for section:', sectionId);
+      const response = await fetch(`/api/v1/sections/${sectionId}/generate-quiz`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          courseId,
+          subjectId,
+          sectionTitle,
+          difficulty: 'Intermediate',
+          questionCount: 5,
+          questionTypes: ['multiple_choice', 'true_false']
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Quiz generation failed:', response.status, errorText);
+        throw new Error(`Failed to generate quiz: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      console.log('Quiz generation response:', result);
+      
+      // The response should contain quiz data
+      const quiz = result.quiz || result;
+      
+      if (quiz && quiz.id) {
+        // Fetch the full quiz with questions and options
+        console.log('Fetching full quiz data for quiz ID:', quiz.id);
+        const quizResponse = await fetch(`/api/v1/quizzes/${quiz.id}`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+        
+        if (quizResponse.ok) {
+          const fullQuiz = await quizResponse.json();
+          console.log('Full quiz data loaded:', fullQuiz);
+          setQuizzes([fullQuiz]);
+        } else {
+          // If fetching full quiz fails, use the generated quiz data
+          console.warn('Could not fetch full quiz, using generated data');
+          setQuizzes([quiz]);
+        }
+      } else {
+        console.error('Invalid quiz response:', result);
+        throw new Error('Quiz generated but no ID returned');
+      }
+    } catch (error) {
+      console.error('Error generating quiz:', error);
+      alert('Failed to generate quiz. Please check the console for details.');
+    } finally {
+      setLoadingQuizzes(false);
+    }
+  };
+
+  const loadExistingExercises = async () => {
+    if (!sectionId) return;
+    
+    try {
+      const response = await fetch(`/api/v1/sections/${sectionId}/exercises`);
+      if (response.ok) {
+        const exercises = await response.json();
+        setPracticeExercises(exercises);
+      }
+    } catch (error) {
+      console.error('Error loading exercises:', error);
+    }
+  };
+
+  const loadExistingQuizzes = async () => {
+    if (!sectionId) return;
+    
+    try {
+      const response = await fetch(`/api/v1/sections/${sectionId}/quizzes`);
+      if (response.ok) {
+        const quizzes = await response.json();
+        setQuizzes(quizzes);
+      }
+    } catch (error) {
+      console.error('Error loading quizzes:', error);
+    }
+  };
+
+  // Load existing content when section changes
+  useMemo(() => {
+    if (sectionId) {
+      loadExistingExercises();
+      loadExistingQuizzes();
+    }
+  }, [sectionId]);
 
   // Enhanced discussion threads
   const [threads, setThreads] = useState<Comment[]>([
@@ -209,116 +353,177 @@ export function ProfessionalCourseTabs({
 
         {activeTab === "exercise" && (
           <div className="space-y-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <Code className="h-5 w-5 text-green-600" />
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-green-100 rounded-lg">
+                  <Code className="h-5 w-5 text-green-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Practice Exercises</h3>
+                  <p className="text-sm text-gray-600">
+                    {practiceExercises.length > 0 
+                      ? `${practiceExercises.length} exercises available`
+                      : "Generate contextual exercises for this section"
+                    }
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">Practice Exercise</h3>
-                <p className="text-sm text-gray-600">Apply what you've learned</p>
-              </div>
+              <button
+                onClick={generatePracticeExercises}
+                disabled={loadingExercises || !sectionId || !courseId || !subjectId}
+                className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loadingExercises ? 'Generating...' : 'Generate Exercises'}
+              </button>
             </div>
 
-            <div className="bg-green-50 rounded-xl p-6 border border-green-200">
-              <h4 className="font-medium text-green-900 mb-3">Exercise Instructions</h4>
-              <p className="text-sm text-green-800 mb-4">
-                {Array.isArray(section?.exercises) && section.exercises.length
-                  ? section.exercises[0].title || "Complete the coding exercise below using the concepts learned in this lesson."
-                  : "Complete the coding exercise below using the concepts learned in this lesson."}
-              </p>
-              
-              <div className="bg-white rounded-lg border border-green-200 overflow-hidden">
-                <div className="bg-green-100 px-4 py-2 border-b border-green-200">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-green-800">SQL Editor</span>
-                    <div className="flex items-center gap-2 text-xs text-green-600">
-                      <span>Press Ctrl+Enter to run</span>
+            {practiceExercises.length > 0 ? (
+              <div className="space-y-4">
+                {practiceExercises.map((exercise, index) => (
+                  <div key={exercise.id || index} className="bg-green-50 rounded-xl p-6 border border-green-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-medium text-green-900">{exercise.title}</h4>
+                      <span className={`px-2 py-1 text-xs rounded-full ${
+                        exercise.difficulty === 'Beginner' ? 'bg-green-100 text-green-700' :
+                        exercise.difficulty === 'Advanced' ? 'bg-red-100 text-red-700' :
+                        'bg-yellow-100 text-yellow-700'
+                      }`}>
+                        {exercise.difficulty}
+                      </span>
                     </div>
+                    
+                    <p className="text-sm text-green-800 mb-4">{exercise.description}</p>
+                    
+                    {exercise.questions && exercise.questions.length > 0 && (
+                      <div className="space-y-4">
+                        {exercise.questions.map((question, qIndex) => (
+                          <div key={question.id || qIndex} className="bg-white rounded-lg border border-green-200 overflow-hidden">
+                            <div className="bg-green-100 px-4 py-2 border-b border-green-200">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium text-green-800">
+                                  {question.question_type?.toUpperCase() || 'SQL'} Exercise
+                                </span>
+                                <div className="flex items-center gap-2 text-xs text-green-600">
+                                  <span>Question {qIndex + 1}</span>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="p-4">
+                              <p className="text-sm text-gray-800 mb-3">{question.question_text}</p>
+                              
+                              <textarea 
+                                className="w-full h-32 p-3 border border-gray-200 rounded-lg font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500" 
+                                placeholder={question.question_type === 'sql' ? 
+                                  '-- Write your SQL query here\nSELECT * FROM table_name\nWHERE condition = \'value\';' :
+                                  '# Write your code here'
+                                }
+                              />
+                              
+                              <div className="mt-3 flex justify-between items-center">
+                                <div className="text-xs text-gray-600">
+                                  Category: {exercise.category}
+                                </div>
+                                <div className="flex gap-2">
+                                  <button className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors">
+                                    Run Code
+                                  </button>
+                                  <button className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors">
+                                    Submit
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-                
-                <textarea 
-                  className="w-full h-48 p-4 font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-inset" 
-                  placeholder="-- Write your SQL query here
-SELECT * FROM table_name
-WHERE condition = 'value';"
-                />
-                
-                <div className="bg-gray-50 px-4 py-3 border-t border-gray-200 flex justify-between items-center">
-                  <div className="text-xs text-gray-600">
-                    Tip: Use proper indentation and semicolons
-                  </div>
-                  <div className="flex gap-2">
-                    <button className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors">
-                      Run Query
-                    </button>
-                    <button className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors">
-                      Submit Answer
-                    </button>
-                  </div>
-                </div>
+                ))}
               </div>
-            </div>
-
-            {/* Results Panel */}
-            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-              <h4 className="font-medium text-gray-900 mb-3">Query Results</h4>
-              <div className="text-sm text-gray-600 italic">
-                Run your query to see results here...
+            ) : (
+              <div className="bg-gray-50 rounded-lg p-8 text-center border border-gray-200">
+                <Code className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                <h4 className="font-medium text-gray-900 mb-2">No Practice Exercises Yet</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  Generate contextual practice exercises for "{sectionTitle}" to start practicing.
+                </p>
+                <p className="text-xs text-gray-500">
+                  Course: {trackTitle} → {subjectTitleProp}
+                </p>
               </div>
-            </div>
+            )}
           </div>
         )}
 
         {activeTab === "quiz" && (
           <div className="space-y-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <CheckSquare className="h-5 w-5 text-purple-600" />
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-purple-100 rounded-lg">
+                  <CheckSquare className="h-5 w-5 text-purple-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Knowledge Assessment</h3>
+                  <p className="text-sm text-gray-600">
+                    {quizzes.length > 0 
+                      ? `${quizzes.length} quiz${quizzes.length > 1 ? 'zes' : ''} available`
+                      : "Generate a quiz for this section"
+                    }
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">Knowledge Assessment</h3>
-                <p className="text-sm text-gray-600">Test your understanding</p>
-              </div>
+              <button
+                onClick={generateQuiz}
+                disabled={loadingQuizzes || !sectionId || !courseId || !subjectId}
+                className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loadingQuizzes ? 'Generating...' : 'Generate Quiz'}
+              </button>
             </div>
 
-            {Array.isArray(section?.quizzes) && section.quizzes.length ? (
-              <div className="bg-purple-50 rounded-xl p-6 border border-purple-200">
-                <h4 className="font-medium text-purple-900 mb-4">
-                  {section.quizzes[0].title || 'Knowledge Check'}
-                </h4>
-                
-                <div className="space-y-4">
-                  <div className="bg-white rounded-lg p-4 border border-purple-200">
-                    <p className="text-sm text-gray-800 mb-3">
-                      Which SQL clause is used to filter records in a query?
-                    </p>
-                    <div className="space-y-2">
-                      {['SELECT', 'WHERE', 'FROM', 'ORDER BY'].map((option, idx) => (
-                        <label key={idx} className="flex items-center gap-2 cursor-pointer">
-                          <input type="radio" name="quiz1" value={option} className="text-purple-600" />
-                          <span className="text-sm text-gray-700">{option}</span>
-                        </label>
-                      ))}
+            {quizzes.length > 0 ? (
+              <div className="space-y-4">
+                {quizzes.map((quiz, index) => (
+                  <div key={quiz.id || index} className="bg-purple-50 rounded-xl p-6 border border-purple-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-medium text-purple-900">{quiz.title || 'Knowledge Check'}</h4>
+                      <span className={`px-2 py-1 text-xs rounded-full ${
+                        quiz.difficulty === 'Beginner' ? 'bg-purple-100 text-purple-700' :
+                        quiz.difficulty === 'Advanced' ? 'bg-red-100 text-red-700' :
+                        'bg-yellow-100 text-yellow-700'
+                      }`}>
+                        {quiz.difficulty || 'Intermediate'}
+                      </span>
                     </div>
+                    
+                    {quiz.quiz_questions && quiz.quiz_questions.length > 0 ? (
+                      <div className="space-y-4">
+                        <p className="text-sm text-purple-800 mb-4">
+                          {quiz.quiz_questions.length} questions • {quiz.type || 'Multiple Choice'}
+                        </p>
+                        <a
+                          href={`/curriculum/${courseId}/${subjectId}/${sectionId}/quiz?quizId=${quiz.id}`}
+                          className="inline-block px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                        >
+                          Start Quiz
+                        </a>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-purple-600">Quiz generated, loading questions...</p>
+                    )}
                   </div>
-                  
-                  <div className="flex justify-between items-center">
-                    <div className="text-sm text-purple-700">
-                      Question 1 of {section.quizzes[0].questions || 5}
-                    </div>
-                    <button className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors">
-                      Submit Answer
-                    </button>
-                  </div>
-                </div>
+                ))}
               </div>
             ) : (
               <div className="bg-gray-50 rounded-lg p-8 text-center border border-gray-200">
                 <CheckSquare className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <h4 className="font-medium text-gray-900 mb-2">Assessment Coming Soon</h4>
-                <p className="text-sm text-gray-600">
-                  Complete the lesson content to unlock the knowledge assessment.
+                <h4 className="font-medium text-gray-900 mb-2">No Assessment Yet</h4>
+                <p className="text-sm text-gray-600 mb-4">
+                  Generate a knowledge assessment for "{sectionTitle}" to test your understanding.
+                </p>
+                <p className="text-xs text-gray-500">
+                  Course: {trackTitle} → {subjectTitleProp}
                 </p>
               </div>
             )}

@@ -167,8 +167,8 @@ export default async function CurriculumPage() {
                     </div>
                     
                     {/* Action Button */}
-                    <Link 
-                      href={`/curriculum/${t.slug}`} 
+                    <Link
+                      href={`/curriculum/${encodeURIComponent(t.slug)}`}
                       className={`inline-flex items-center gap-2 px-6 py-3 rounded-xl text-white font-medium transition-all hover:shadow-lg ${
                         index % 2 === 0 
                           ? 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700' 
@@ -231,7 +231,3 @@ export default async function CurriculumPage() {
     </div>
   )
 }
-
-
-
-

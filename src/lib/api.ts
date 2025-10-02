@@ -106,3 +106,8 @@ export async function apiDelete<T>(path: string): Promise<T> {
   }
   return (await res.json()) as T;
 }
+
+// Quiz-related API functions
+export async function getQuiz(quizId: string) {
+  return apiGet(`/v1/quizzes/${quizId}`);
+}
