@@ -15,6 +15,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/video-player";
 import { ProfessionalCourseTabs } from "@/components/professional-course-tabs";
+import { PracticeArea } from "@/components/practice-area";
+import { supabaseBrowser } from '@/lib/supabase-browser';
 
 import {
   Activity,
@@ -445,8 +447,34 @@ export function SubjectLearningInterface({
   const [adaptiveQuizCompleted, setAdaptiveQuizCompleted] = useState(false);
   const [adaptiveQuizSummary, setAdaptiveQuizSummary] = useState<any>(null);
   const [loadingNextQuestion, setLoadingNextQuestion] = useState(false);
+
+  // Authentication state
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  
+  // Get session token from Supabase
+  useEffect(() => {
+    const getSession = async () => {
+      try {
+        const supabase = supabaseBrowser();
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          setSessionToken(session.access_token);
+        }
+      } catch (error) {
+        console.error('Failed to get session:', error);
+      }
+    };
+    
+    getSession();
+  }, []);
   const [showAdaptiveExplanation, setShowAdaptiveExplanation] = useState(false);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
+
+  // Practice Mode state
+  const [isPracticeMode, setIsPracticeMode] = useState(false);
+  const [selectedPracticeExercise, setSelectedPracticeExercise] = useState<any>(null);
+  const [practiceQuestions, setPracticeQuestions] = useState<any[]>([]);
+  const [practiceDatasets, setPracticeDatasets] = useState<any[]>([]);
 
   // Function to fetch exercise datasets
   const fetchExerciseDatasets = useCallback(async (exerciseId: string) => {
@@ -558,6 +586,36 @@ export function SubjectLearningInterface({
     }
   }, [loadingSectionExercises, sectionExercises]);
 
+  // Subject-to-exercise-type mapping
+  const getExerciseTypeBySubject = useCallback((subjectTitle?: string | null) => {
+    if (!subjectTitle) return 'sql';
+    
+    const subject = subjectTitle.toLowerCase();
+    
+    // Python related subjects
+    if (subject.includes('python') || subject.includes('programming') || subject.includes('coding')) {
+      return 'python';
+    }
+    
+    // SQL related subjects  
+    if (subject.includes('sql') || subject.includes('database') || subject.includes('data')) {
+      return 'sql';
+    }
+    
+    // Statistics related subjects
+    if (subject.includes('statistics') || subject.includes('statistical') || subject.includes('math')) {
+      return 'statistics';
+    }
+    
+    // Google Sheets related subjects
+    if (subject.includes('sheet') || subject.includes('excel') || subject.includes('spreadsheet')) {
+      return 'google_sheets';
+    }
+    
+    // Default to sql
+    return 'sql';
+  }, []);
+
   // Generation functions with progressive loading
   const handleGenerateExercise = useCallback(async (section: Section) => {
     if (generatingExercise[section.id]) return;
@@ -571,13 +629,16 @@ export function SubjectLearningInterface({
       setGenerationStep('Getting section details...');
       setGenerationProgress(40);
 
+      // Determine exercise type based on subject
+      const exerciseType = getExerciseTypeBySubject(subjectTitle);
+      
       const result = await generateSectionExercisesAction({
         sectionId: section.id,
         courseId,
         subjectId,
         sectionTitle: section.title,
         difficulty: 'Beginner',
-        exerciseType: 'sql',
+        exerciseType: exerciseType as 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry',
         questionCount: 3,
       }) as GeneratedExerciseResponse;
 
@@ -622,7 +683,7 @@ export function SubjectLearningInterface({
         setGenerationProgress(0);
       }, 2000);
     }
-  }, [generatingExercise, generateSectionExercisesAction, courseId, subjectId]);
+  }, [generatingExercise, generateSectionExercisesAction, courseId, subjectId, getExerciseTypeBySubject, subjectTitle]);
 
   // Adaptive Quiz Handlers
   const handleStartAdaptiveQuiz = useCallback(async (section: Section) => {
@@ -717,6 +778,80 @@ export function SubjectLearningInterface({
     setShowAdaptiveExplanation(false);
     setLastAnswerCorrect(null);
   }, []);
+
+  // Practice Mode Handlers
+  const handleStartPractice = useCallback(async (exercise: any) => {
+    if (!exercise || !exercise.section_exercise_questions) return;
+
+    setSelectedPracticeExercise(exercise);
+    setPracticeQuestions(exercise.section_exercise_questions);
+    
+    // Fetch datasets for the exercise
+    try {
+      const response = await getExerciseDatasetsAction(exercise.id);
+      if (response && response.data) {
+        setPracticeDatasets(response.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch practice datasets:', error);
+      setPracticeDatasets([]);
+    }
+    
+    setIsPracticeMode(true);
+  }, []);
+
+  const handleExitPractice = useCallback(() => {
+    setIsPracticeMode(false);
+    setSelectedPracticeExercise(null);
+    setPracticeQuestions([]);
+    setPracticeDatasets([]);
+  }, []);
+
+  const handlePracticeSubmit = useCallback(async (questionId: string, solution: string) => {
+    try {
+      if (!sessionToken) {
+        console.error('No session token available');
+        return {
+          success: false,
+          feedback: "Authentication required. Please refresh the page."
+        };
+      }
+
+      const response = await fetch('/api/v1/practice-exercises/attempt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken && {'Authorization': `Bearer ${sessionToken}`}),
+        },
+        body: JSON.stringify({
+          question_id: questionId,
+          submitted_answer: solution,
+          attempted_at: new Date().toISOString(),
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        return {
+          success: true,
+          isCorrect: result.is_correct,
+          feedback: result.feedback || "Solution submitted successfully!"
+        };
+      } else {
+        console.error('Failed to submit practice attempt:', response.statusText);
+        return {
+          success: false,
+          feedback: "Failed to submit solution. Please try again."
+        };
+      }
+    } catch (error) {
+      console.error('Error submitting practice attempt:', error);
+      return {
+        success: false,
+        feedback: "Network error. Please check your connection and try again."
+      };
+    }
+  }, [sessionToken]);
 
   const fetchQuestionDataset = useCallback(async (questionId: string) => {
     if (!questionId) return;
@@ -1811,7 +1946,18 @@ export function SubjectLearningInterface({
                 {/* Tasks section */}
                 {exerciseQuestions.length > 0 && (
                   <div className="mb-4">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Tasks:</h4>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium text-gray-900">Tasks:</h4>
+                      <button
+                        onClick={() => handleStartPractice(activeExercise)}
+                        className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition flex items-center gap-2"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h1m4 0h1m6-9v2.5A1.5 1.5 0 0118.5 9H21l-3 3-3-3h2.5A1.5 1.5 0 0116 7.5V5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-2.5" />
+                        </svg>
+                        Practice Mode
+                      </button>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {exerciseQuestions.map((question: PracticeExerciseQuestion, index: number) => (
                         <div key={question.id || index} className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
@@ -2559,6 +2705,30 @@ export function SubjectLearningInterface({
     );
   } else if (isAdaptiveQuizMode) {
     contentDisplay = renderAdaptiveQuizDisplay();
+  } else if (isPracticeMode) {
+    const exerciseType = getExerciseTypeBySubject(subjectTitle) as 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry';
+    contentDisplay = (
+      <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden">
+        <div className="flex items-center justify-between p-4 border-b border-gray-200">
+          <h2 className="text-xl font-semibold text-gray-900">
+            Practice Mode: {selectedPracticeExercise?.title || 'Exercise'}
+          </h2>
+          <button
+            onClick={handleExitPractice}
+            className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition"
+          >
+            Exit Practice
+          </button>
+        </div>
+        <PracticeArea
+          questions={practiceQuestions}
+          datasets={practiceDatasets}
+          exerciseType={exerciseType}
+          exerciseTitle={selectedPracticeExercise?.title}
+          onSubmit={handlePracticeSubmit}
+        />
+      </div>
+    );
   } else if (selectedResource?.kind === "lecture") {
     contentDisplay = renderLectureDisplay();
   } else if (selectedResource?.kind === "exercise") {
