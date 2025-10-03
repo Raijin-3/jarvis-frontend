@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/video-player";
 import { ProfessionalCourseTabs } from "@/components/professional-course-tabs";
 import { PracticeArea } from "@/components/practice-area";
+import { useVideoState } from "@/hooks/use-video-state";
 import { supabaseBrowser } from '@/lib/supabase-browser';
 
 import {
@@ -425,6 +426,98 @@ export function SubjectLearningInterface({
 
   // Question popup state
   const [selectedQuestionForPopup, setSelectedQuestionForPopup] = useState<any>(null);
+
+  // Floating video player state
+  const [showFloatingPlayer, setShowFloatingPlayer] = useState(false);
+  const [isMainVideoFocused, setIsMainVideoFocused] = useState(false);
+  const [isFloatingPlayerManuallyClosed, setIsFloatingPlayerManuallyClosed] = useState(false);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const videoFocusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const scrollThrottleRef = useRef<NodeJS.Timeout | null>(null);
+  const manualCloseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const showFloatingPlayerRef = useRef(false);
+  showFloatingPlayerRef.current = showFloatingPlayer;
+
+  // Stabilize floating state to avoid focus flicker
+  useEffect(() => {
+    if (!showFloatingPlayer) {
+      return;
+    }
+    if (videoFocusTimeoutRef.current) {
+      clearTimeout(videoFocusTimeoutRef.current);
+      videoFocusTimeoutRef.current = null;
+    }
+    setIsMainVideoFocused(false);
+  }, [showFloatingPlayer]);
+
+  // Video state management
+  const {
+    videoState,
+    updateCurrentTime,
+    updatePlayState,
+    updateDuration,
+    setVideoRef,
+    syncVideoTime,
+    syncPlayState,
+  } = useVideoState();
+
+  // Handle video focus/blur events
+  const handleVideoFocus = useCallback(() => {
+    if (showFloatingPlayerRef.current) return;
+    console.log('Video focused - hiding floating player');
+    setIsMainVideoFocused(true);
+  }, []);
+
+  const handleVideoBlur = useCallback(() => {
+    if (showFloatingPlayerRef.current) return;
+    console.log('Video blurred - can show floating player');
+    setIsMainVideoFocused(false);
+  }, []);
+
+  // Handle video container interactions
+  const handleVideoContainerMouseEnter = useCallback(() => {
+    if (showFloatingPlayerRef.current) return;
+    console.log('Video container mouse enter - hiding floating player');
+    // Clear any pending timeout
+    if (videoFocusTimeoutRef.current) {
+      clearTimeout(videoFocusTimeoutRef.current);
+      videoFocusTimeoutRef.current = null;
+    }
+    setIsMainVideoFocused(true);
+  }, []);
+
+  const handleVideoContainerMouseLeave = useCallback(() => {
+    if (showFloatingPlayerRef.current) return;
+    console.log('Video container mouse leave - can show floating player after delay');
+    // Set a timeout before allowing floating player to show
+    videoFocusTimeoutRef.current = setTimeout(() => {
+      console.log('Video focus timeout - can show floating player');
+      setIsMainVideoFocused(false);
+      videoFocusTimeoutRef.current = null;
+    }, 500); // 500ms delay
+  }, []);
+
+  const handleVideoContainerClick = useCallback(() => {
+    if (showFloatingPlayerRef.current) return;
+    console.log('Video container clicked - hiding floating player');
+    // Clear any pending timeout
+    if (videoFocusTimeoutRef.current) {
+      clearTimeout(videoFocusTimeoutRef.current);
+      videoFocusTimeoutRef.current = null;
+    }
+    setIsMainVideoFocused(true);
+  }, []);
+
+  // Custom video ref callback to add focus listeners
+  const handleVideoRef = useCallback((videoElement: HTMLVideoElement | null) => {
+    setVideoRef(videoElement);
+
+    if (videoElement) {
+      videoElement.addEventListener('focus', handleVideoFocus);
+      videoElement.addEventListener('blur', handleVideoBlur);
+      videoElement.setAttribute('tabIndex', '-1'); // Make video focusable
+    }
+  }, [handleVideoFocus, handleVideoBlur, setVideoRef]);
   const [showQuestionPopup, setShowQuestionPopup] = useState(false);
 
   // SQL execution state
@@ -1258,6 +1351,143 @@ export function SubjectLearningInterface({
     }
   }, [activeExercise?.id, fetchExerciseDatasets]);
 
+  // Check if current lecture content is a video
+  const isLectureVideo = useMemo(() => {
+    if (!lectureContent) return false;
+
+    const trimmed = lectureContent.trim();
+
+    try {
+      const url = new URL(trimmed);
+      const lower = url.pathname.toLowerCase();
+
+      return (
+        url.hostname.includes("mediadelivery.net") ||
+        lower.endsWith(".mp4") ||
+        lower.endsWith(".webm") ||
+        lower.endsWith(".ogg")
+      );
+    } catch {
+      return false;
+    }
+  }, [lectureContent]);
+
+  // Scroll detection for floating video player
+  useEffect(() => {
+    if (!isLectureVideo || !lectureContent) {
+      console.log('Floating player: Not a video or no content', { isLectureVideo, lectureContent });
+      return;
+    }
+
+    const checkFloatingPlayer = () => {
+      if (!videoContainerRef.current) {
+        console.log('Floating player: No video container ref');
+        return;
+      }
+
+      // Skip scroll detection when floating player is already shown to prevent flickering
+      if (showFloatingPlayer) {
+        // Only hide if main video gets focused (user clicked back to main area)
+        if (isMainVideoFocused) {
+          console.log('Hiding floating player - main video focused');
+          setShowFloatingPlayer(false);
+          setIsFloatingPlayerManuallyClosed(false);
+        }
+        return;
+      }
+
+      const rect = videoContainerRef.current.getBoundingClientRect();
+      const isVideoOutOfView = rect.bottom < 0 || rect.top > window.innerHeight;
+
+      console.log('Floating player scroll check:', {
+        isVideoOutOfView,
+        isVideoFocused: isMainVideoFocused,
+        rectBottom: rect.bottom,
+        rectTop: rect.top,
+        windowHeight: window.innerHeight,
+        showFloatingPlayer
+      });
+
+      // Show floating player when video goes out of view AND main video is not focused AND not manually closed
+      if (isVideoOutOfView && !isMainVideoFocused && !isFloatingPlayerManuallyClosed) {
+        console.log('Showing floating player - video out of view and not focused');
+        // No need to manage video state since it's the same video element
+        setShowFloatingPlayer(true);
+      }
+    };
+
+    const handleScroll = () => {
+      if (scrollThrottleRef.current) return;
+      
+      scrollThrottleRef.current = setTimeout(() => {
+        checkFloatingPlayer();
+        scrollThrottleRef.current = null;
+      }, 100);
+    };
+
+    // Initial check on mount
+    checkFloatingPlayer();
+
+    window.addEventListener('scroll', handleScroll);
+    window.addEventListener('resize', checkFloatingPlayer);
+
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', checkFloatingPlayer);
+    };
+
+  }, [isLectureVideo, lectureContent, isMainVideoFocused, showFloatingPlayer, activeLecture?.title, selectedSection?.title]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (videoFocusTimeoutRef.current) {
+        clearTimeout(videoFocusTimeoutRef.current);
+      }
+      if (scrollThrottleRef.current) {
+        clearTimeout(scrollThrottleRef.current);
+      }
+      if (manualCloseTimeoutRef.current) {
+        clearTimeout(manualCloseTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Handle floating video player actions
+  const handleCloseFloatingPlayer = useCallback(() => {
+    setShowFloatingPlayer(false);
+    setIsFloatingPlayerManuallyClosed(true);
+    
+    // No need to manage video state since it's the same video element
+    
+    // Clear any existing timeout
+    if (manualCloseTimeoutRef.current) {
+      clearTimeout(manualCloseTimeoutRef.current);
+    }
+    
+    // Reset manual close flag after 3 seconds to allow automatic reopening
+    manualCloseTimeoutRef.current = setTimeout(() => {
+      setIsFloatingPlayerManuallyClosed(false);
+    }, 3000);
+  }, []);
+
+  const handleExpandFloatingPlayer = useCallback(() => {
+    setShowFloatingPlayer(false);
+    setIsFloatingPlayerManuallyClosed(false); // Reset manual close flag since user is returning to main video
+    if (videoContainerRef.current) {
+      videoContainerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    // No need to manage video state since it's the same video element
+    
+    // Clear any existing manual close timeout
+    if (manualCloseTimeoutRef.current) {
+      clearTimeout(manualCloseTimeoutRef.current);
+    }
+  }, []);
+
+  // Removed handleFloatingVideoTimeUpdate and handleFloatingVideoPlayStateChange 
+  // since we're now using the same video element that pops out
+
   const activeQuiz = useMemo(() => {
 
     if (
@@ -1291,38 +1521,6 @@ export function SubjectLearningInterface({
 
   }, [selectedResource, selectedSection, loadedQuiz]);
 
-  const isLectureVideo = useMemo(() => {
-
-    if (!lectureContent) return false;
-
-    const trimmed = lectureContent.trim();
-
-    try {
-
-      const url = new URL(trimmed);
-
-      const lower = url.pathname.toLowerCase();
-
-      return (
-
-        url.hostname.includes("mediadelivery.net") ||
-
-        lower.endsWith(".mp4") ||
-
-        lower.endsWith(".webm") ||
-
-        lower.endsWith(".ogg")
-
-      );
-
-    } catch {
-
-      return false;
-
-    }
-
-  }, [lectureContent]);
-
   const lectureNode = useMemo(() => {
 
     if (!lectureContent) {
@@ -1349,13 +1547,35 @@ export function SubjectLearningInterface({
 
       if (url.hostname.includes("mediadelivery.net")) {
 
-        return <VideoPlayer src={txt} className="h-full w-full object-cover" />;
+        return (
+          <VideoPlayer
+            src={txt}
+            className="h-full w-full object-cover"
+            onTimeUpdate={updateCurrentTime}
+            onPlayStateChange={updatePlayState}
+            onDurationChange={updateDuration}
+            onVideoRef={handleVideoRef}
+            currentTime={videoState.currentTime}
+            shouldPlay={videoState.isPlaying}
+          />
+        );
 
       }
 
       if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".ogg")) {
 
-        return <VideoPlayer src={txt} className="h-full w-full object-cover" />;
+        return (
+          <VideoPlayer
+            src={txt}
+            className="h-full w-full object-cover"
+            onTimeUpdate={updateCurrentTime}
+            onPlayStateChange={updatePlayState}
+            onDurationChange={updateDuration}
+            onVideoRef={handleVideoRef}
+            currentTime={videoState.currentTime}
+            shouldPlay={videoState.isPlaying}
+          />
+        );
 
       }
 
@@ -1567,23 +1787,88 @@ export function SubjectLearningInterface({
 
           <div className="relative bg-slate-950 text-white">
 
-            <div className="relative aspect-video w-full">
+            <div 
+              ref={videoContainerRef} 
+              className={`relative transition-all duration-300 ${
+                showFloatingPlayer 
+                  ? "fixed z-50 bg-black rounded-lg shadow-2xl border border-gray-700 overflow-hidden" 
+                  : "aspect-video w-full"
+              }`}
+              style={showFloatingPlayer ? {
+                width: '320px',
+                height: '180px',
+                position: 'fixed',
+                right: '20px',
+                bottom: '20px',
+                zIndex: 9999
+              } : {}}
+              onMouseEnter={handleVideoContainerMouseEnter}
+              onMouseLeave={handleVideoContainerMouseLeave}
+              onClick={handleVideoContainerClick}
+            >
 
-              <div className="absolute inset-0">{lectureNode}</div>
-
-              <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-6 py-4">
-
-                <div>
-
-                  <p className="text-xs font-medium uppercase tracking-[0.2em] text-white/70">Now Playing</p>
-
-                  <p className="mt-1 max-w-xl text-sm font-semibold leading-snug text-white/90">
-
-                    {activeLecture.title || selectedSection.title || "Lesson"}
-
-                  </p>
-
+              {/* Floating player header */}
+              {showFloatingPlayer && (
+                <div className="bg-gray-900 px-3 py-2 flex items-center justify-between cursor-move">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-xs font-medium truncate">
+                      {activeLecture?.title || selectedSection?.title || "Video Player"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 ml-2">
+                    <button
+                      onClick={handleExpandFloatingPlayer}
+                      className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                      title="Expand to main view"
+                    >
+                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={handleCloseFloatingPlayer}
+                      className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                      title="Close floating player"
+                    >
+                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
+              )}
+
+              <div className={`${showFloatingPlayer ? 'h-full' : 'absolute inset-0'}`}>{lectureNode}</div>
+              
+              {/* Test button for floating player */}
+              {/* <button
+                onClick={() => {
+                  console.log('Manual floating player trigger', { isLectureVideo, lectureContent, isPlaying: videoState.isPlaying });
+                  setWasPlayingBeforeFloating(videoState.isPlaying);
+                  setShowFloatingPlayer(true);
+                  setFloatingVideoSrc(lectureContent);
+                  setFloatingVideoTitle(activeLecture?.title || selectedSection?.title || "Video");
+                }}
+                className="absolute top-2 right-2 bg-blue-500 text-white px-2 py-1 rounded text-xs z-10 shadow-md"
+              >
+                test floating
+              </button> */}
+
+              {/* Video overlay info - only show when not floating */}
+              {!showFloatingPlayer && (
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between px-6 py-4">
+
+                  <div>
+
+                    <p className="text-xs font-medium uppercase tracking-[0.2em] text-white/70">Now Playing</p>
+
+                    <p className="mt-1 max-w-xl text-sm font-semibold leading-snug text-white/90">
+
+                      {activeLecture.title || selectedSection.title || "Lesson"}
+
+                    </p>
+
+                  </div>
 
                 <div className="hidden rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/80 backdrop-blur lg:flex">
 
@@ -1595,9 +1880,25 @@ export function SubjectLearningInterface({
 
                 </div>
 
-              </div>
+                </div>
+              )}
+
 
             </div>
+
+            {showFloatingPlayer && (
+              <div className="aspect-video w-full bg-slate-800 flex items-center justify-center">
+                <div className="text-center text-white/70">
+                  <div className="mb-2">
+                    <svg className="w-12 h-12 mx-auto opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-medium">Video playing in floating window</p>
+                  <p className="text-xs mt-1 opacity-75">Click expand button to return here</p>
+                </div>
+              </div>
+            )}
 
           </div>
 
@@ -3266,6 +3567,8 @@ export function SubjectLearningInterface({
 
       {/* Question Popup */}
       {renderQuestionPopup()}
+
+      {/* Floating Video Player - now handled by the pop-out video container above */}
 
     </div>
 
