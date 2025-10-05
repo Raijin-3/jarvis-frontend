@@ -164,7 +164,7 @@ export function SubjectsForm() {
       };
       if (token) headers.Authorization = "Bearer " + token;
 
-      await fetch("/api/subject-selection/select", {
+      const response = await fetch("/api/subject-selection/select", {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -172,12 +172,30 @@ export function SubjectsForm() {
         }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(errorText || "Failed to save subject selection");
+      }
+
+      const data = await response.json();
+
       toast.success("Subjects saved successfully!");
       setShowCompletion(true);
       setSubmitting(false);
 
       setTimeout(() => {
-        router.replace("/assessment/start?first=1");
+        // Redirect to assessment with the created assessment ID
+        const assessmentId = data?.assessment_id;
+        if (assessmentId) {
+          const params = new URLSearchParams({
+            assessment_id: assessmentId,
+            first: '1',
+          });
+          router.replace(`/assessment/start?${params.toString()}`);
+        } else {
+          // Fallback for backward compatibility
+          router.replace("/assessment/start?first=1");
+        }
       }, 1200);
     } catch (error) {
       console.error("Failed to save subjects:", error);
@@ -322,8 +340,3 @@ export function SubjectsForm() {
     </div>
   );
 }
-
-
-
-
-

@@ -163,8 +163,24 @@ export function AssessmentRunner() {
         console.warn("Failed to refresh learning paths:", refreshError);
       }
 
-      const isFirstAssessment = typeof window !== "undefined" && window.location.search.includes("first=1");
-      if (isFirstAssessment) {
+      const learningPath = summary?.learningPath ?? null;
+      const objectPathId =
+        typeof learningPath?.id === "string" && learningPath.id.trim().length > 0
+          ? learningPath.id
+          : null;
+      const responsePathId =
+        typeof summary?.learningPathId === "string" &&
+        summary.learningPathId.trim().length > 0
+          ? summary.learningPathId
+          : null;
+      const learningPathId = objectPathId ?? responsePathId;
+      const isFirstAssessment =
+        typeof window !== "undefined" && window.location.search.includes("first=1");
+      if (learningPathId) {
+        const params = new URLSearchParams({ ref: "assessment", path_id: learningPathId });
+        if (isFirstAssessment) params.set("first", "1");
+        router.replace(`/learning-path?${params.toString()}`);
+      } else if (isFirstAssessment) {
         router.replace("/learning-path?first=1");
       } else {
         router.replace("/dashboard");

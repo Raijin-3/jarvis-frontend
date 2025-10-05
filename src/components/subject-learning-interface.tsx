@@ -3518,32 +3518,36 @@ export function SubjectLearningInterface({
                             return null;
                           })()}
 
-                          {/* Static generation menus */}
-                          <button
-                            onClick={() => handleGenerateExercise(section)}
-                            disabled={generatingExercise[section.id]}
-                            className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-blue-50 hover:bg-blue-100 text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {generatingExercise[section.id] ? (
-                              <div className="w-4 h-4 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                            ) : (
-                              <Code className="w-4 h-4" />
-                            )}
-                            <span>Exercise</span>
-                          </button>
+                          {/* Static generation menus - Hide Exercise and Adaptive Quiz buttons for first section of first module */}
+                          {!(moduleIndex === 0 && (module.sections || []).indexOf(section) === 0) && (
+                            <>
+                              <button
+                                onClick={() => handleGenerateExercise(section)}
+                                disabled={generatingExercise[section.id]}
+                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-blue-50 hover:bg-blue-100 text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {generatingExercise[section.id] ? (
+                                  <div className="w-4 h-4 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                  <Code className="w-4 h-4" />
+                                )}
+                                <span>Exercise</span>
+                              </button>
 
-                          <button
-                            onClick={() => handleStartAdaptiveQuiz(section)}
-                            disabled={loadingNextQuestion}
-                            className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-purple-50 hover:bg-purple-100 text-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {loadingNextQuestion ? (
-                              <div className="w-4 h-4 border border-purple-400 border-t-transparent rounded-full animate-spin"></div>
-                            ) : (
-                              <CheckSquare className="w-4 h-4" />
-                            )}
-                            <span>Adaptive Quiz</span>
-                          </button>
+                              <button
+                                onClick={() => handleStartAdaptiveQuiz(section)}
+                                disabled={loadingNextQuestion}
+                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-purple-50 hover:bg-purple-100 text-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {loadingNextQuestion ? (
+                                  <div className="w-4 h-4 border border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                  <CheckSquare className="w-4 h-4" />
+                                )}
+                                <span>Adaptive Quiz</span>
+                              </button>
+                            </>
+                          )}
 
                         </div>
 

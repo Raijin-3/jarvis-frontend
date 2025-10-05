@@ -214,22 +214,16 @@ export function ProfessionalCourseTabs({
       description: "Lesson content and materials"
     },
     { 
-      id: "exercise", 
-      label: "Practice", 
-      icon: Code,
-      description: "Hands-on exercises"
-    },
-    { 
-      id: "quiz", 
-      label: "Assessment", 
-      icon: CheckSquare,
-      description: "Test your knowledge"
-    },
-    { 
       id: "discussion", 
       label: "Discussion", 
       icon: MessageCircle,
       description: "Q&A and peer interaction"
+    },
+    { 
+      id: "feedback", 
+      label: "Feedback", 
+      icon: MessageCircle,
+      description: "Feedback"
     },
   ];
 
@@ -348,185 +342,6 @@ export function ProfessionalCourseTabs({
                 <button className="text-sm text-indigo-600 hover:text-indigo-800 font-medium">View Transcript</button>
               </div>
             </div>
-          </div>
-        )}
-
-        {activeTab === "exercise" && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-green-100 rounded-lg">
-                  <Code className="h-5 w-5 text-green-600" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Practice Exercises</h3>
-                  <p className="text-sm text-gray-600">
-                    {practiceExercises.length > 0 
-                      ? `${practiceExercises.length} exercises available`
-                      : "Generate contextual exercises for this section"
-                    }
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={generatePracticeExercises}
-                disabled={loadingExercises || !sectionId || !courseId || !subjectId}
-                className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loadingExercises ? 'Generating...' : 'Generate Exercises'}
-              </button>
-            </div>
-
-            {practiceExercises.length > 0 ? (
-              <div className="space-y-4">
-                {practiceExercises.map((exercise, index) => (
-                  <div key={exercise.id || index} className="bg-green-50 rounded-xl p-6 border border-green-200">
-                    <div className="flex items-center justify-between mb-4">
-                      <h4 className="font-medium text-green-900">{exercise.title}</h4>
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        exercise.difficulty === 'Beginner' ? 'bg-green-100 text-green-700' :
-                        exercise.difficulty === 'Advanced' ? 'bg-red-100 text-red-700' :
-                        'bg-yellow-100 text-yellow-700'
-                      }`}>
-                        {exercise.difficulty}
-                      </span>
-                    </div>
-                    
-                    <p className="text-sm text-green-800 mb-4">{exercise.description}</p>
-                    
-                    {exercise.questions && exercise.questions.length > 0 && (
-                      <div className="space-y-4">
-                        {exercise.questions.map((question, qIndex) => (
-                          <div key={question.id || qIndex} className="bg-white rounded-lg border border-green-200 overflow-hidden">
-                            <div className="bg-green-100 px-4 py-2 border-b border-green-200">
-                              <div className="flex items-center justify-between">
-                                <span className="text-sm font-medium text-green-800">
-                                  {question.question_type?.toUpperCase() || 'SQL'} Exercise
-                                </span>
-                                <div className="flex items-center gap-2 text-xs text-green-600">
-                                  <span>Question {qIndex + 1}</span>
-                                </div>
-                              </div>
-                            </div>
-                            
-                            <div className="p-4">
-                              <p className="text-sm text-gray-800 mb-3">{question.question_text}</p>
-                              
-                              <textarea 
-                                className="w-full h-32 p-3 border border-gray-200 rounded-lg font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-green-500" 
-                                placeholder={question.question_type === 'sql' ? 
-                                  '-- Write your SQL query here\nSELECT * FROM table_name\nWHERE condition = \'value\';' :
-                                  '# Write your code here'
-                                }
-                              />
-                              
-                              <div className="mt-3 flex justify-between items-center">
-                                <div className="text-xs text-gray-600">
-                                  Category: {exercise.category}
-                                </div>
-                                <div className="flex gap-2">
-                                  <button className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors">
-                                    Run Code
-                                  </button>
-                                  <button className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors">
-                                    Submit
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="bg-gray-50 rounded-lg p-8 text-center border border-gray-200">
-                <Code className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <h4 className="font-medium text-gray-900 mb-2">No Practice Exercises Yet</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Generate contextual practice exercises for "{sectionTitle}" to start practicing.
-                </p>
-                <p className="text-xs text-gray-500">
-                  Course: {trackTitle} → {subjectTitleProp}
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === "quiz" && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-purple-100 rounded-lg">
-                  <CheckSquare className="h-5 w-5 text-purple-600" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Knowledge Assessment</h3>
-                  <p className="text-sm text-gray-600">
-                    {quizzes.length > 0 
-                      ? `${quizzes.length} quiz${quizzes.length > 1 ? 'zes' : ''} available`
-                      : "Generate a quiz for this section"
-                    }
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={generateQuiz}
-                disabled={loadingQuizzes || !sectionId || !courseId || !subjectId}
-                className="px-4 py-2 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loadingQuizzes ? 'Generating...' : 'Generate Quiz'}
-              </button>
-            </div>
-
-            {quizzes.length > 0 ? (
-              <div className="space-y-4">
-                {quizzes.map((quiz, index) => (
-                  <div key={quiz.id || index} className="bg-purple-50 rounded-xl p-6 border border-purple-200">
-                    <div className="flex items-center justify-between mb-4">
-                      <h4 className="font-medium text-purple-900">{quiz.title || 'Knowledge Check'}</h4>
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        quiz.difficulty === 'Beginner' ? 'bg-purple-100 text-purple-700' :
-                        quiz.difficulty === 'Advanced' ? 'bg-red-100 text-red-700' :
-                        'bg-yellow-100 text-yellow-700'
-                      }`}>
-                        {quiz.difficulty || 'Intermediate'}
-                      </span>
-                    </div>
-                    
-                    {quiz.quiz_questions && quiz.quiz_questions.length > 0 ? (
-                      <div className="space-y-4">
-                        <p className="text-sm text-purple-800 mb-4">
-                          {quiz.quiz_questions.length} questions • {quiz.type || 'Multiple Choice'}
-                        </p>
-                        <a
-                          href={`/curriculum/${courseId}/${subjectId}/${sectionId}/quiz?quizId=${quiz.id}`}
-                          className="inline-block px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-                        >
-                          Start Quiz
-                        </a>
-                      </div>
-                    ) : (
-                      <p className="text-sm text-purple-600">Quiz generated, loading questions...</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="bg-gray-50 rounded-lg p-8 text-center border border-gray-200">
-                <CheckSquare className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <h4 className="font-medium text-gray-900 mb-2">No Assessment Yet</h4>
-                <p className="text-sm text-gray-600 mb-4">
-                  Generate a knowledge assessment for "{sectionTitle}" to test your understanding.
-                </p>
-                <p className="text-xs text-gray-500">
-                  Course: {trackTitle} → {subjectTitleProp}
-                </p>
-              </div>
-            )}
           </div>
         )}
 
