@@ -1,6 +1,4 @@
 "use client";
-
-import { useRouter } from "next/navigation";
 import {
   getQuizAction,
   generateSectionExercisesAction,
@@ -11,6 +9,7 @@ import {
   startAdaptiveQuizAction,
   getNextQuestionAction,
   getAdaptiveQuizSummaryAction,
+  getExerciseProgressAction,
 } from "@/lib/actions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/video-player";
@@ -18,6 +17,7 @@ import { ProfessionalCourseTabs } from "@/components/professional-course-tabs";
 import { PracticeArea } from "@/components/practice-area";
 import { useVideoState } from "@/hooks/use-video-state";
 import { supabaseBrowser } from '@/lib/supabase-browser';
+import { useDuckDB } from "@/hooks/use-duckdb";
 
 import {
   Activity,
@@ -40,11 +40,13 @@ type PracticeExerciseQuestion = {
   exercise_id: string;
   question_text: string;
   question_type: 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry';
+  text?: string;
   options?: any;
   correct_answer?: any;
   solution?: string;
   created_at: string;
   updated_at: string;
+  dataset?: string | Record<string, unknown>;
 }
 
 type Exercise = {
@@ -54,6 +56,8 @@ type Exercise = {
   category: string;
   difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
   questions: PracticeExerciseQuestion[];
+  section_exercise_questions?: PracticeExerciseQuestion[];
+  dataset?: string | Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
@@ -102,7 +106,7 @@ type GeneratedExerciseResponse = {
       adaptive_note: string;
     }>;
     expected_cols_list: string[][];
-    data
+    data_creation_sql?: string;
     answers_sql_map: Record<number, string>;
     verification: Array<{
       question: number;
@@ -138,6 +142,140 @@ const resourceLabels: Record<ResourceKind, string> = {
   quiz: "Section Quiz",
 };
 
+const getExerciseQuestionKey = (question: any, fallbackIndex: number): string => {
+  const normalizedIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+  if (!question) {
+    return `question-${normalizedIndex}`;
+  }
+
+  if (question.id !== undefined && question.id !== null) {
+    return String(question.id);
+  }
+
+  if ((question as any).question_id !== undefined && (question as any).question_id !== null) {
+    return String((question as any).question_id);
+  }
+
+  if (
+    (question as any).exercise_id !== undefined &&
+    (question as any).exercise_id !== null &&
+    (question as any).order_index !== undefined
+  ) {
+    return `${(question as any).exercise_id}-${(question as any).order_index}`;
+  }
+
+  if ((question as any).order_index !== undefined && (question as any).order_index !== null) {
+    return `order-${(question as any).order_index}`;
+  }
+
+  const textSource =
+    typeof question.question_text === "string"
+      ? question.question_text
+      : typeof question.text === "string"
+      ? question.text
+      : "";
+
+  if (textSource) {
+    return `${normalizedIndex}-${textSource.slice(0, 20)}`;
+  }
+
+  return `question-${normalizedIndex}`;
+};
+
+const normalizeCreationSql = (value?: string | null): string | undefined => {
+  if (!value || typeof value !== "string") {
+    return undefined;
+  }
+
+  let normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const fencedMatch = normalized.match(/^```[\w+-]*\n([\s\S]*?)\n```$/i);
+  if (fencedMatch) {
+    normalized = fencedMatch[1].trim();
+  } else {
+    normalized = normalized.replace(/^```[\w+-]*\s*/i, "").trim();
+    normalized = normalized.replace(/\s*```[\w+-]*$/i, "").trim();
+  }
+
+  normalized = normalized.replace(/\s*```[\w+-]*\s*$/gi, "").trim();
+  normalized = normalized.replace(/\s+```[\w+-]*\s*/gi, " ").trim();
+
+  return normalized || undefined;
+};
+
+const normalizeSectionExerciseQuestion = (
+  question: any,
+  options: { exerciseId?: string; fallbackIndex?: number } = {},
+) => {
+  const { exerciseId, fallbackIndex } = options;
+  const rawId =
+    question?.id ??
+    question?.question_id ??
+    question?.questionId ??
+    (typeof fallbackIndex === "number" && exerciseId
+      ? `${exerciseId}-${fallbackIndex}`
+      : fallbackIndex ?? null);
+
+  const normalizedId =
+    typeof rawId === "number"
+      ? String(rawId)
+      : typeof rawId === "string" && rawId
+      ? rawId
+      : `question-${fallbackIndex ?? 0}`;
+
+  const rawText = typeof question?.text === "string" ? question.text.trim() : "";
+  const fallbackText =
+    typeof question?.question_text === "string" ? question.question_text.trim() : "";
+  const normalizedText = rawText || fallbackText || "";
+
+  const rawType =
+    typeof question?.question_type === "string" && question.question_type.trim()
+      ? question.question_type
+      : typeof question?.type === "string" && question.type.trim()
+      ? question.type
+      : "sql";
+  const normalizedType =
+    typeof rawType === "string" && rawType.trim() ? rawType.toLowerCase() : "sql";
+
+  const derivedExerciseId =
+    question?.exercise_id ??
+    question?.exerciseId ??
+    (typeof exerciseId === "string" ? exerciseId : undefined);
+
+  const normalizedExerciseId =
+    typeof derivedExerciseId === "string" && derivedExerciseId
+      ? derivedExerciseId
+      : typeof derivedExerciseId === "number"
+      ? String(derivedExerciseId)
+      : typeof exerciseId === "string"
+      ? exerciseId
+      : undefined;
+
+  const normalizedOrderIndex =
+    typeof question?.order_index === "number"
+      ? question.order_index
+      : typeof fallbackIndex === "number"
+      ? fallbackIndex
+      : 0;
+
+  return {
+    ...question,
+    id: normalizedId,
+    dataset: normalizeCreationSql(question?.dataset),
+    creation_sql: normalizeCreationSql(
+      question?.creation_sql ?? question?.dataset ?? question?.sql,
+    ),
+    text: normalizedText,
+    question_text: normalizedText,
+    question_type: normalizedType,
+    type: normalizedType,
+    exercise_id: normalizedExerciseId,
+    order_index: normalizedOrderIndex,
+  };
+};
 
 
 const FALLBACK_SOURCES: string[] = [
@@ -266,6 +404,7 @@ const getDefaultResource = (section?: Section | null): SelectedResource | null =
 
   }
 
+
   const exercises = getExercises(section);
 
   if (exercises.length) {
@@ -305,12 +444,13 @@ export function SubjectLearningInterface({
   subjectId: string;
   initialModuleSlug?: string;
 }) {
-  const router = useRouter();
 
   const allSections = useMemo(
     () => (subjectModules || []).flatMap((module) => module.sections || []),
     [subjectModules]
   );
+
+  console.log("All Sections:", allSections);
 
   const getModuleIdentifier = useCallback((module: Module | undefined) => {
     if (!module) return undefined;
@@ -400,8 +540,9 @@ export function SubjectLearningInterface({
   const [currentSectionQuizIndex, setCurrentSectionQuizIndex] = useState(0);
   const [quizSession, setQuizSession] = useState<{
     quizzes: Quiz[];
-    currentQuizId: string;
+    currentQuizId?: string;
     prevResult: { score: number; answers: Record<string, any>; stop: boolean } | null;
+    currentSectionQuizIndex: number;
   } | null>(null);
 
   // Generation state
@@ -464,20 +605,20 @@ export function SubjectLearningInterface({
   // Handle video focus/blur events
   const handleVideoFocus = useCallback(() => {
     if (showFloatingPlayerRef.current) return;
-    console.log('Video focused - hiding floating player');
+    // console.log('Video focused - hiding floating player');
     setIsMainVideoFocused(true);
   }, []);
 
   const handleVideoBlur = useCallback(() => {
     if (showFloatingPlayerRef.current) return;
-    console.log('Video blurred - can show floating player');
+    // console.log('Video blurred - can show floating player');
     setIsMainVideoFocused(false);
   }, []);
 
   // Handle video container interactions
   const handleVideoContainerMouseEnter = useCallback(() => {
     if (showFloatingPlayerRef.current) return;
-    console.log('Video container mouse enter - hiding floating player');
+    // console.log('Video container mouse enter - hiding floating player');
     // Clear any pending timeout
     if (videoFocusTimeoutRef.current) {
       clearTimeout(videoFocusTimeoutRef.current);
@@ -488,10 +629,10 @@ export function SubjectLearningInterface({
 
   const handleVideoContainerMouseLeave = useCallback(() => {
     if (showFloatingPlayerRef.current) return;
-    console.log('Video container mouse leave - can show floating player after delay');
+    // console.log('Video container mouse leave - can show floating player after delay');
     // Set a timeout before allowing floating player to show
     videoFocusTimeoutRef.current = setTimeout(() => {
-      console.log('Video focus timeout - can show floating player');
+      // console.log('Video focus timeout - can show floating player');
       setIsMainVideoFocused(false);
       videoFocusTimeoutRef.current = null;
     }, 500); // 500ms delay
@@ -499,7 +640,7 @@ export function SubjectLearningInterface({
 
   const handleVideoContainerClick = useCallback(() => {
     if (showFloatingPlayerRef.current) return;
-    console.log('Video container clicked - hiding floating player');
+    // console.log('Video container clicked - hiding floating player');
     // Clear any pending timeout
     if (videoFocusTimeoutRef.current) {
       clearTimeout(videoFocusTimeoutRef.current);
@@ -525,12 +666,24 @@ export function SubjectLearningInterface({
   const [sqlResults, setSqlResults] = useState<any[]>([]);
   const [sqlError, setSqlError] = useState<string>('');
   const [isExecutingSql, setIsExecutingSql] = useState(false);
+  const duckdb = useDuckDB();
+  const {
+    isReady: isDuckDbReady,
+    isLoading: isDuckDbLoading,
+    error: duckDbError,
+    executeQuery: executeDuckDbQuery,
+    loadDataset: loadDuckDbDataset,
+  } = duckdb;
+  const [isPreparingDuckDb, setIsPreparingDuckDb] = useState(false);
+  const [duckDbSetupError, setDuckDbSetupError] = useState<string | null>(null);
+  const [duckDbTables, setDuckDbTables] = useState<string[]>([]);
 
   // Dataset state
   const [exerciseDatasets, setExerciseDatasets] = useState<{ [exerciseId: string]: any[] }>({});
   const [loadingExerciseDatasets, setLoadingExerciseDatasets] = useState<Record<string, boolean>>({});
   const [questionDataset, setQuestionDataset] = useState<any>(null);
   const [loadingDataset, setLoadingDataset] = useState(false);
+  const [questionCompletionStatus, setQuestionCompletionStatus] = useState<Record<string, "pending" | "completed">>({});
 
   // Adaptive Quiz state
   const [isAdaptiveQuizMode, setIsAdaptiveQuizMode] = useState(false);
@@ -539,12 +692,14 @@ export function SubjectLearningInterface({
   const [adaptiveQuizAnswer, setAdaptiveQuizAnswer] = useState<string>('');
   const [adaptiveQuizCompleted, setAdaptiveQuizCompleted] = useState(false);
   const [adaptiveQuizSummary, setAdaptiveQuizSummary] = useState<any>(null);
-  const [loadingNextQuestion, setLoadingNextQuestion] = useState(false);
+  const [submittingAdaptiveAnswer, setSubmittingAdaptiveAnswer] = useState(false);
+  const [pendingAdaptiveQuestion, setPendingAdaptiveQuestion] = useState<any>(null);
 
   // Authentication state
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
   
-  // Get session token from Supabase
+  // Get session token and userId from Supabase
   useEffect(() => {
     const getSession = async () => {
       try {
@@ -552,6 +707,9 @@ export function SubjectLearningInterface({
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.access_token) {
           setSessionToken(session.access_token);
+        }
+        if (session?.user?.id) {
+          setUserId(session.user.id);
         }
       } catch (error) {
         console.error('Failed to get session:', error);
@@ -569,19 +727,37 @@ export function SubjectLearningInterface({
   const [practiceQuestions, setPracticeQuestions] = useState<any[]>([]);
   const [practiceDatasets, setPracticeDatasets] = useState<any[]>([]);
 
+  const selectedQuestionType = useMemo(() => {
+    if (!selectedQuestionForPopup) {
+      return null;
+    }
+    const rawType =
+      (selectedQuestionForPopup as any)?.question_type ||
+      (selectedQuestionForPopup as any)?.type ||
+      "sql";
+    return typeof rawType === "string" ? rawType.toLowerCase() : null;
+  }, [selectedQuestionForPopup]);
+
+
   // Function to fetch exercise datasets
   const fetchExerciseDatasets = useCallback(async (exerciseId: string) => {
     if (loadingExerciseDatasets[exerciseId] || exerciseDatasets[exerciseId]) return;
 
     setLoadingExerciseDatasets(prev => ({ ...prev, [exerciseId]: true }));
     try {
-      const response = await getExerciseDatasetsAction(exerciseId);
+      const response = await getExerciseDatasetsAction(exerciseId) as any;
       if (response && response.data) {
+        const normalizedDatasets = Array.isArray(response.data)
+          ? response.data.map((dataset: any) => ({
+              ...dataset,
+              creation_sql: normalizeCreationSql(dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset),
+            }))
+          : [];
         setExerciseDatasets(prev => ({
           ...prev,
-          [exerciseId]: response.data
+          [exerciseId]: normalizedDatasets
         }));
-        console.log('Fetched datasets for exercise:', exerciseId, response.data);
+        // console.log('Fetched datasets for exercise:', exerciseId, normalizedDatasets);
       }
     } catch (error) {
       console.error('Failed to fetch exercise datasets:', error);
@@ -596,13 +772,13 @@ export function SubjectLearningInterface({
 
     setLoadingSectionQuizzes(prev => ({ ...prev, [sectionId]: true }));
     try {
-      const response = await getSectionQuizzesAction(sectionId);
+      const response = await getSectionQuizzesAction(sectionId) as any;
       if (response && response.data) {
         setSectionQuizzes(prev => ({
           ...prev,
           [sectionId]: response.data
         }));
-        console.log('Fetched quizzes for section:', sectionId, response.data);
+        // console.log('Fetched quizzes for section:', sectionId, response.data);
       }
     } catch (error) {
       console.error('Failed to fetch section quizzes:', error);
@@ -613,67 +789,67 @@ export function SubjectLearningInterface({
 
   // SQL execution will be handled by backend API
 
-
-
-  // SQL execution handler
-  const handleExecuteSQL = useCallback(async (code: string) => {
-    if (!code.trim() || isExecutingSql) return;
-
-    setIsExecutingSql(true);
-    setSqlError('');
-    setSqlResults([]);
-
-    try {
-      // Call backend API to execute SQL
-      const response = await fetch('/api/v1/sql/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          sql: code,
-          questionId: selectedQuestionForPopup?.id 
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`SQL execution failed: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      if (result.error) {
-        throw new Error(result.error);
-      }
-
-      setSqlResults(result.data || []);
-    } catch (error) {
-      console.error('SQL execution error:', error);
-      setSqlError(error instanceof Error ? error.message : 'An error occurred while executing SQL');
-    } finally {
-      setIsExecutingSql(false);
-    }
-  }, [isExecutingSql, selectedQuestionForPopup?.id]);
-
   // Database initialization is now handled by backend API
 
   const autoScrollArmedRef = useRef(Boolean(initialModuleSlug));
 
   // Function to fetch section exercises
   const fetchSectionExercises = useCallback(async (sectionId: string) => {
-    if (loadingSectionExercises[sectionId] || sectionExercises[sectionId]) return;
+    // console.log('[FETCH EXERCISES DEBUG] Called for section:', sectionId, {
+    //   alreadyLoading: loadingSectionExercises[sectionId],
+    //   alreadyLoaded: !!sectionExercises[sectionId],
+    //   currentState: sectionExercises
+    // });
+    
+    if (loadingSectionExercises[sectionId] || sectionExercises[sectionId]) {
+      // console.log('[FETCH EXERCISES DEBUG] Early return - already loading or loaded');
+      return;
+    }
 
     setLoadingSectionExercises(prev => ({ ...prev, [sectionId]: true }));
     try {
-      const response = await getSectionExercisesAction(sectionId);
+      const response = await getSectionExercisesAction(sectionId) as any;
+      // console.log('[FETCH EXERCISES DEBUG] API response:', response);
       if (response && response.data) {
-        setSectionExercises(prev => ({
-          ...prev,
-          [sectionId]: response.data
-        }));
-        console.log('Fetched exercises for section:', sectionId, response.data);
+        const normalizedExercises = Array.isArray(response.data)
+          ? response.data.map((exercise: any) => ({
+              ...exercise,
+              // Map 'data' field from backend to 'dataset' field expected by frontend
+              dataset: normalizeCreationSql(exercise?.data),
+              section_exercise_questions: Array.isArray(exercise?.section_exercise_questions)
+                ? exercise.section_exercise_questions.map((question: any, index: number) =>
+                    normalizeSectionExerciseQuestion(question, {
+                      exerciseId: exercise?.id ? String(exercise.id) : undefined,
+                      fallbackIndex: index,
+                    }),
+                  )
+                : exercise?.section_exercise_questions,
+              context: exercise?.context
+                ? {
+                    ...exercise.context,
+                    data_creation_sql: normalizeCreationSql(exercise.context.data_creation_sql),
+                  }
+                : exercise?.context,
+            }))
+          : [];
+
+        // console.log('[FETCH EXERCISES DEBUG] Exercises data:', normalizedExercises.map((e: any) => ({
+        //   id: e.id,
+        //   title: e.title,
+        //   questionsCount: e.section_exercise_questions?.length || 0,
+        //   questions: e.section_exercise_questions
+        // })));
+        setSectionExercises(prev => {
+          const newState = {
+            ...prev,
+            [sectionId]: normalizedExercises
+          };
+          // console.log('[FETCH EXERCISES DEBUG] State updated. New state:', newState);
+          return newState;
+        });
       }
     } catch (error) {
-      console.error('Failed to fetch section exercises:', error);
+      console.error('[FETCH EXERCISES DEBUG] Failed to fetch section exercises:', error);
     } finally {
       setLoadingSectionExercises(prev => ({ ...prev, [sectionId]: false }));
     }
@@ -705,8 +881,58 @@ export function SubjectLearningInterface({
       return 'google_sheets';
     }
     
-    // Default to sql
+  // Default to sql
     return 'sql';
+  }, []);
+
+  const fetchQuestionDataset = useCallback(async (questionId: string) => {
+    if (!questionId) return;
+
+    setLoadingDataset(true);
+    try {
+      const response = await fetch(`/api/v1/sections/questions/${questionId}/dataset`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.status === 404) {
+        // No dataset persisted for this question yet (common for freshly-generated content)
+        setQuestionDataset(null);
+        return;
+      }
+
+      if (response.ok) {
+        const result = await response.json();
+        const normalizedDataset = result?.data
+          ? {
+              ...result.data,
+              creation_sql: normalizeCreationSql(result.data.creation_sql ?? result.data.sql),
+              dataset:
+                typeof result.data.dataset === "string"
+                  ? normalizeCreationSql(result.data.dataset)
+                  : result.data.dataset,
+              schema_info: result.data.schema_info
+                ? {
+                    ...result.data.schema_info,
+                    creation_sql: normalizeCreationSql(result.data.schema_info.creation_sql),
+                  }
+                : result.data.schema_info,
+            }
+          : null;
+        setQuestionDataset(normalizedDataset);
+        // console.log('Fetched dataset for question:', questionId, normalizedDataset);
+      } else {
+        console.error('Failed to fetch dataset:', response.statusText);
+        setQuestionDataset(null);
+      }
+    } catch (error) {
+      console.error('Error fetching dataset:', error);
+      setQuestionDataset(null);
+    } finally {
+      setLoadingDataset(false);
+    }
   }, []);
 
   // Generation functions with progressive loading
@@ -733,6 +959,7 @@ export function SubjectLearningInterface({
         difficulty: 'Beginner',
         exerciseType: exerciseType as 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry',
         questionCount: 3,
+        userId: userId ?? undefined,
       }) as GeneratedExerciseResponse;
 
       // Step 2: Generating questions & SQL
@@ -742,15 +969,111 @@ export function SubjectLearningInterface({
       // Process the generated exercise data
       if (result && result.context) {
         const { context } = result;
+        const rawQuestions = context.questions_raw || [];
+        const normalizedQuestionType = (exerciseType || 'sql') as
+          | 'sql'
+          | 'python'
+          | 'google_sheets'
+          | 'statistics'
+          | 'reasoning'
+          | 'math'
+          | 'geometry';
 
         // Step 3: Dataset is now stored in database during generation
         setGenerationStep('Finalizing exercise...');
         setGenerationProgress(80);
 
-        // Store questions in the exercise
-        if (result.questions && result.questions.length > 0) {
-          result.exercise.questions = result.questions;
-          console.log('Exercise with questions:', result.exercise);
+        const apiQuestions = (result.questions || []).map((question, index) => ({
+          ...question,
+          text: question.question_text || (rawQuestions?.[index]?.business_question ?? ''),
+        }));
+
+        const normalizedCreationSql = normalizeCreationSql(context.data_creation_sql);
+        const normalizedContext = {
+          ...context,
+          data_creation_sql: normalizedCreationSql,
+        };
+
+        const derivedQuestions =
+          apiQuestions.length > 0
+            ? apiQuestions
+            : rawQuestions.map((question, index) => ({
+                id: `${result.exercise.id}-generated-${question.id ?? index}`,
+                exercise_id: result.exercise.id,
+                question_text: question.business_question,
+                question_type: normalizedQuestionType,
+                text: question.business_question,
+                options: [],
+                correct_answer: null,
+                solution: '',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                dataset: normalizedCreationSql,
+              }));
+
+        const updatedExercise = {
+          ...result.exercise,
+          questions: derivedQuestions,
+        };
+
+        const normalizedExerciseEntry = {
+          ...updatedExercise,
+          section_exercise_questions: derivedQuestions,
+          dataset: normalizedCreationSql,
+          context: normalizedContext,
+        };
+
+        setCurrentExerciseData({
+          ...result,
+          context: normalizedContext,
+          exercise: updatedExercise,
+          questions: derivedQuestions,
+        });
+
+        setSectionExercises(prev => ({
+          ...prev,
+          [section.id]: [
+            normalizedExerciseEntry,
+            ...(prev[section.id]?.filter((exercise: any) => exercise.id !== updatedExercise.id) ?? []),
+          ],
+        }));
+
+        setExerciseDatasets(prev => ({
+          ...prev,
+          [updatedExercise.id]: [
+            {
+              id: 'generated_dataset',
+              name: updatedExercise.title || 'Generated Dataset',
+              description: context.dataset_description,
+              columns: context.expected_cols_list?.[0] || [],
+              creation_sql: normalizedCreationSql,
+              data_dictionary: context.data_dictionary,
+            },
+          ],
+        }));
+
+        setSelectedSectionId(section.id);
+        setSelectedResource({
+          sectionId: section.id,
+          kind: "exercise",
+          resourceId: updatedExercise.id,
+        });
+
+        const firstQuestion = derivedQuestions[0];
+        if (firstQuestion) {
+          setActiveExerciseQuestion(
+            {
+              ...firstQuestion,
+              exerciseId: updatedExercise.id ? String(updatedExercise.id) : null,
+              exerciseTitle: updatedExercise.title,
+              exerciseDescription: updatedExercise.description,
+              exerciseDataset: normalizedCreationSql,
+            },
+            0,
+          );
+          setShowQuestionPopup(false);
+        } else {
+          setSelectedQuestionForPopup(null);
         }
       }
 
@@ -760,10 +1083,7 @@ export function SubjectLearningInterface({
       // Brief delay to show completion
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      console.log('Exercise generated successfully:', result);
-
-      // Auto-refresh to display the generated exercise automatically
-      router.refresh();
+      // console.log('Exercise generated successfully:', result);
     } catch (error) {
       console.error('Failed to generate exercise:', error);
       setGenerationStep('Failed to generate exercise');
@@ -776,7 +1096,14 @@ export function SubjectLearningInterface({
         setGenerationProgress(0);
       }, 2000);
     }
-  }, [generatingExercise, generateSectionExercisesAction, courseId, subjectId, getExerciseTypeBySubject, subjectTitle]);
+  }, [
+    generatingExercise,
+    generateSectionExercisesAction,
+    courseId,
+    subjectId,
+    getExerciseTypeBySubject,
+    subjectTitle,
+  ]);
 
   // Adaptive Quiz Handlers
   const handleStartAdaptiveQuiz = useCallback(async (section: Section) => {
@@ -791,7 +1118,7 @@ export function SubjectLearningInterface({
         sectionTitle: section.title || '',
         difficulty: 'Beginner',
         targetLength: 10,
-      });
+      }) as any;
 
       if (result && result.session && result.firstQuestion && !result.stop) {
         setAdaptiveQuizSession(result.session);
@@ -799,10 +1126,12 @@ export function SubjectLearningInterface({
         setIsAdaptiveQuizMode(true);
         setAdaptiveQuizCompleted(false);
         setAdaptiveQuizAnswer('');
+        setPendingAdaptiveQuestion(null);
+        setSubmittingAdaptiveAnswer(false);
         setShowAdaptiveExplanation(false);
         setLastAnswerCorrect(null);
         setAdaptiveQuizSummary(null);
-      } else if (result.stop) {
+      } else if (result?.stop) {
         console.log('Quiz stopped immediately');
       }
     } catch (error) {
@@ -812,12 +1141,22 @@ export function SubjectLearningInterface({
     }
   }, [generatingQuiz, courseId, subjectId, isAdaptiveQuizMode]);
 
-  const handleAdaptiveQuizNext = useCallback(async () => {
-    if (!currentAdaptiveQuestion || !adaptiveQuizSession || !adaptiveQuizAnswer) return;
+  const handleAdaptiveQuizSubmit = useCallback(async () => {
+    if (
+      !currentAdaptiveQuestion ||
+      !adaptiveQuizSession ||
+      !adaptiveQuizAnswer ||
+      submittingAdaptiveAnswer ||
+      showAdaptiveExplanation
+    ) {
+      return;
+    }
 
-    setLoadingNextQuestion(true);
+    setSubmittingAdaptiveAnswer(true);
+    setPendingAdaptiveQuestion(null);
+
     try {
-      // Check if answer is correct by comparing labels (A, B, C, D)
+      // Compare labels (A, B, C, D) to determine correctness
       const selectedLabel = adaptiveQuizAnswer;
       const correctLabel = currentAdaptiveQuestion.correct_option?.label;
       const isCorrect = selectedLabel === correctLabel;
@@ -825,10 +1164,6 @@ export function SubjectLearningInterface({
       setLastAnswerCorrect(isCorrect);
       setShowAdaptiveExplanation(true);
 
-      // Wait a moment to show explanation before getting next question
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Get next question
       const result = await getNextQuestionAction({
         sessionId: adaptiveQuizSession.id,
         previousAnswer: {
@@ -836,36 +1171,50 @@ export function SubjectLearningInterface({
           selectedOption: adaptiveQuizAnswer,
           isCorrect,
         },
-      });
+      }) as any;
 
-      if (result.stop) {
-        // Quiz completed
+      if (result?.stop) {
         setAdaptiveQuizCompleted(true);
-        
-        // Fetch summary
+
         const summaryResult = await getAdaptiveQuizSummaryAction(adaptiveQuizSession.id);
         if (summaryResult) {
           setAdaptiveQuizSummary(summaryResult);
         }
-      } else if (result.question) {
-        // Move to next question
-        setCurrentAdaptiveQuestion(result.question);
-        setAdaptiveQuizAnswer('');
-        setShowAdaptiveExplanation(false);
-        setLastAnswerCorrect(null);
+      } else if (result?.question) {
+        setPendingAdaptiveQuestion(result.question);
       }
     } catch (error) {
-      console.error('Failed to get next question:', error);
+      console.error('Failed to submit adaptive quiz answer:', error);
     } finally {
-      setLoadingNextQuestion(false);
+      setSubmittingAdaptiveAnswer(false);
     }
-  }, [currentAdaptiveQuestion, adaptiveQuizSession, adaptiveQuizAnswer]);
+  }, [
+    currentAdaptiveQuestion,
+    adaptiveQuizSession,
+    adaptiveQuizAnswer,
+    submittingAdaptiveAnswer,
+    showAdaptiveExplanation,
+  ]);
+
+  const handleAdaptiveQuizNext = useCallback(() => {
+    if (!pendingAdaptiveQuestion) {
+      return;
+    }
+
+    setCurrentAdaptiveQuestion(pendingAdaptiveQuestion);
+    setPendingAdaptiveQuestion(null);
+    setAdaptiveQuizAnswer('');
+    setShowAdaptiveExplanation(false);
+    setLastAnswerCorrect(null);
+  }, [pendingAdaptiveQuestion]);
 
   const handleExitAdaptiveQuiz = useCallback(() => {
     setIsAdaptiveQuizMode(false);
     setAdaptiveQuizSession(null);
     setCurrentAdaptiveQuestion(null);
     setAdaptiveQuizAnswer('');
+    setPendingAdaptiveQuestion(null);
+    setSubmittingAdaptiveAnswer(false);
     setAdaptiveQuizCompleted(false);
     setAdaptiveQuizSummary(null);
     setShowAdaptiveExplanation(false);
@@ -873,25 +1222,68 @@ export function SubjectLearningInterface({
   }, []);
 
   // Practice Mode Handlers
-  const handleStartPractice = useCallback(async (exercise: any) => {
-    if (!exercise || !exercise.section_exercise_questions) return;
-
-    setSelectedPracticeExercise(exercise);
-    setPracticeQuestions(exercise.section_exercise_questions);
-    
-    // Fetch datasets for the exercise
-    try {
-      const response = await getExerciseDatasetsAction(exercise.id);
-      if (response && response.data) {
-        setPracticeDatasets(response.data);
+  const handleStartPractice = useCallback(
+    async (exercise: any) => {
+      if (!exercise) {
+        return;
       }
-    } catch (error) {
-      console.error('Failed to fetch practice datasets:', error);
+
+      const rawQuestions = Array.isArray(exercise.section_exercise_questions) &&
+        exercise.section_exercise_questions.length > 0
+          ? exercise.section_exercise_questions
+          : Array.isArray(exercise.questions)
+          ? exercise.questions
+          : [];
+
+      if (!rawQuestions.length) {
+        console.warn('No practice questions available for exercise:', exercise?.id);
+        return;
+      }
+
+      const normalizedQuestions = rawQuestions.map((question: any, index: number) =>
+        normalizeSectionExerciseQuestion(question, {
+          exerciseId: exercise?.id ? String(exercise.id) : undefined,
+          fallbackIndex: index,
+        }),
+      );
+
+      const normalizedExercise = {
+        ...exercise,
+        dataset: normalizeCreationSql(exercise?.dataset),
+        section_exercise_questions: normalizedQuestions,
+      };
+
+      setSelectedPracticeExercise(normalizedExercise);
+      setPracticeQuestions(normalizedQuestions);
+      setShowQuestionPopup(false);
+      setSelectedQuestionForPopup(null);
+      setIsPracticeMode(true);
       setPracticeDatasets([]);
-    }
-    
-    setIsPracticeMode(true);
-  }, []);
+
+      try {
+        const response = (await getExerciseDatasetsAction(exercise.id)) as any;
+        if (response && response.data) {
+          const normalizedDatasets = Array.isArray(response.data)
+            ? response.data.map((dataset: any) => ({
+                ...dataset,
+                creation_sql: normalizeCreationSql(
+                  dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset,
+                ),
+              }))
+            : [];
+          setPracticeDatasets(normalizedDatasets);
+        } else {
+          setPracticeDatasets([]);
+        }
+      } catch (error) {
+        console.error('Failed to fetch practice datasets:', error);
+        setPracticeDatasets([]);
+      }
+
+      // Practice mode already enabled above
+    },
+    [getExerciseDatasetsAction],
+  );
 
   const handleExitPractice = useCallback(() => {
     setIsPracticeMode(false);
@@ -945,34 +1337,6 @@ export function SubjectLearningInterface({
       };
     }
   }, [sessionToken]);
-
-  const fetchQuestionDataset = useCallback(async (questionId: string) => {
-    if (!questionId) return;
-    
-    setLoadingDataset(true);
-    try {
-      const response = await fetch(`/api/v1/sections/questions/${questionId}/dataset`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        setQuestionDataset(result.data);
-        console.log('Fetched dataset for question:', questionId, result.data);
-      } else {
-        console.error('Failed to fetch dataset:', response.statusText);
-        setQuestionDataset(null);
-      }
-    } catch (error) {
-      console.error('Error fetching dataset:', error);
-      setQuestionDataset(null);
-    } finally {
-      setLoadingDataset(false);
-    }
-  }, []);
 
   const registerSectionRef = useCallback(
 
@@ -1079,7 +1443,9 @@ export function SubjectLearningInterface({
     }
 
     // Fetch section exercises and quizzes when a section is selected
+    // console.log('[useEffect] Calling fetchSectionExercises for section:', selectedSection.id);
     fetchSectionExercises(selectedSection.id);
+    // console.log('[useEffect] Calling fetchSectionQuizzes for section:', selectedSection.id);
     fetchSectionQuizzes(selectedSection.id);
 
     const fallbackResource = getDefaultResource(selectedSection);
@@ -1115,7 +1481,7 @@ export function SubjectLearningInterface({
         }
 
         if (prev.kind === "exercise") {
-
+          console.log(selectedSection);
           const exercises = getExercises(selectedSection);
 
           if (exercises.some((exercise) => exercise.id === prev.resourceId)) return prev;
@@ -1205,7 +1571,7 @@ export function SubjectLearningInterface({
 
     if (stop) {
       setIsQuizRunnerMode(false);
-      console.log(`Quiz session completed with score ${score}%`);
+      // console.log(`Quiz session completed with score ${score}%`);
       return;
     }
 
@@ -1227,7 +1593,7 @@ export function SubjectLearningInterface({
           answers: Object.fromEntries(Object.entries(answers).map(([k, v]) => [k, v[0] || ''])),
           stop: false,
         },
-      });
+      }) as any;
 
       // Local update with new quiz
       const newQuiz = result.quiz as Quiz;
@@ -1253,9 +1619,9 @@ export function SubjectLearningInterface({
         currentSectionQuizIndex: newIndex,
       });
       setLoadedQuiz(null); // Reload new quiz
-      console.log('Next quiz generated and loaded');
+      // console.log('Next quiz generated and loaded');
     } catch (error) {
-      console.error('Failed to generate next quiz:', error);
+      // console.error('Failed to generate next quiz:', error);
       setIsQuizRunnerMode(false);
     }
   }, [courseId, subjectId, sectionQuizzes, allSections, quizSession]);
@@ -1317,32 +1683,358 @@ export function SubjectLearningInterface({
   }, [allSections, lectureSelection, selectedSection]);
 
   const activeExercise = useMemo(() => {
-
     if (
-
       !selectedSection ||
-
       !selectedResource ||
-
       selectedResource.kind !== "exercise" ||
-
       selectedResource.sectionId !== selectedSection.id
-
     ) {
-
       return null;
-
     }
 
-    const exercises = getExercises(selectedSection);
+    const sectionExercisesForSelectedSection = selectedSection.id
+      ? sectionExercises[selectedSection.id]
+      : undefined;
 
-    if (!exercises.length) return null;
+    const exercisesSource =
+      Array.isArray(sectionExercisesForSelectedSection) && sectionExercisesForSelectedSection.length > 0
+        ? sectionExercisesForSelectedSection
+        : getExercises(selectedSection);
 
-    if (!selectedResource.resourceId) return exercises[0];
+    // console.log('[ACTIVE EXERCISE DEBUG]', {
+    //   sectionId: selectedSection.id,
+    //   resourceId: selectedResource.resourceId,
+    //   fromAPI: Array.isArray(sectionExercisesForSelectedSection) && sectionExercisesForSelectedSection.length > 0,
+    //   exercisesCount: exercisesSource.length,
+    //   exercises: exercisesSource.map((e: any) => ({
+    //     id: e.id,
+    //     title: e.title,
+    //     questionsCount: e.section_exercise_questions?.length || e.questions?.length || 0
+    //   }))
+    // });
 
-    return exercises.find((exercise) => exercise.id === selectedResource.resourceId) || exercises[0];
+    if (!exercisesSource.length) return null;
 
-  }, [selectedResource, selectedSection]);
+    if (!selectedResource.resourceId) return exercisesSource[0];
+
+    return (
+      exercisesSource.find((exercise: any) => exercise.id === selectedResource.resourceId) ||
+      exercisesSource[0]
+    );
+  }, [selectedResource, selectedSection, sectionExercises]);
+
+  const activeExerciseQuestions = useMemo(() => {
+    if (!activeExercise) {
+      return [];
+    }
+
+    const questions =
+      (Array.isArray(activeExercise.section_exercise_questions) && activeExercise.section_exercise_questions.length > 0
+        ? activeExercise.section_exercise_questions
+        : activeExercise.questions) || [];
+
+    return questions;
+  }, [activeExercise]);
+
+  useEffect(() => {
+    if (!activeExerciseQuestions.length) {
+      setQuestionCompletionStatus({});
+      return;
+    }
+
+    setQuestionCompletionStatus((prev) => {
+      const next: Record<string, "pending" | "completed"> = {};
+      let changed = Object.keys(prev).length !== activeExerciseQuestions.length;
+
+      activeExerciseQuestions.forEach((question, index) => {
+        const key = getExerciseQuestionKey(question, index);
+        const previousStatus = prev[key] === "completed" ? "completed" : "pending";
+        next[key] = previousStatus;
+        if (!changed && prev[key] !== previousStatus) {
+          changed = true;
+        }
+        if (!changed && !(key in prev)) {
+          changed = true;
+        }
+      });
+
+      if (!changed) {
+        return prev;
+      }
+
+      return next;
+    });
+  }, [activeExercise?.id, activeExerciseQuestions]);
+
+  const setActiveExerciseQuestion = useCallback(
+    (question: any, index: number, exerciseOverride?: any) => {
+      const exerciseContext = exerciseOverride ?? activeExercise;
+      if (!question || !exerciseContext) {
+        return;
+      }
+
+      const exerciseDatasetSql = normalizeCreationSql(
+        (question as any)?.exerciseDataset ?? exerciseContext.dataset,
+      );
+
+      setSelectedQuestionForPopup({
+        ...question,
+        exerciseId: exerciseContext.id ? String(exerciseContext.id) : null,
+        exerciseTitle: exerciseContext.title,
+        exerciseDescription: exerciseContext.description,
+        exerciseDataset: exerciseDatasetSql,
+        text:
+          typeof (question as any)?.text === "string" && (question as any).text.trim()
+            ? (question as any).text
+            : typeof (question as any)?.question_text === "string"
+            ? (question as any).question_text
+            : "",
+        question_text:
+          typeof (question as any)?.question_text === "string" && (question as any).question_text.trim()
+            ? (question as any).question_text
+            : typeof (question as any)?.text === "string"
+            ? (question as any).text
+            : "",
+        question_type:
+          typeof (question as any)?.question_type === "string" && (question as any).question_type.trim()
+            ? (question as any).question_type.toLowerCase()
+            : typeof (question as any)?.type === "string" && (question as any).type.trim()
+            ? (question as any).type.toLowerCase()
+            : "sql",
+      });
+      setSqlCode('');
+      setSqlResults([]);
+      setSqlError('');
+      setQuestionDataset(null);
+      if (question.id) {
+        fetchQuestionDataset(question.id);
+      }
+    },
+    [activeExercise, fetchQuestionDataset],
+  );
+
+  const markQuestionCompleted = useCallback(
+    (question: any | null) => {
+      if (!question) {
+        return;
+      }
+
+      if (!activeExerciseQuestions.length) {
+        return;
+      }
+
+      let index = activeExerciseQuestions.findIndex((candidate, candidateIndex) => {
+        const candidateKey = getExerciseQuestionKey(candidate, candidateIndex);
+        const targetKey = getExerciseQuestionKey(question, candidateIndex);
+        return candidateKey === targetKey;
+      });
+
+      if (index < 0 && typeof question?.order_index === "number") {
+        index = activeExerciseQuestions.findIndex(
+          (candidate: any) => candidate?.order_index === question.order_index,
+        );
+      }
+
+      const key = getExerciseQuestionKey(question, index);
+
+      setQuestionCompletionStatus((prev) => {
+        if (prev[key] === "completed") {
+          return prev;
+        }
+        return {
+          ...prev,
+          [key]: "completed",
+        };
+      });
+    },
+    [activeExerciseQuestions],
+  );
+
+  // SQL execution handler
+  const handleExecuteSQL = useCallback(
+    async (code: string) => {
+      if (!code.trim() || isExecutingSql) {
+        return;
+      }
+
+      if (selectedQuestionType && selectedQuestionType !== "sql") {
+        setSqlError("SQL execution is only available for SQL questions.");
+        return;
+      }
+
+      if (!isDuckDbReady) {
+        setSqlError("SQL engine is still initializing. Please wait a moment and try again.");
+        return;
+      }
+
+      if (isPreparingDuckDb) {
+        setSqlError("Datasets are still loading. Please wait for the SQL engine to finish preparing.");
+        return;
+      }
+
+      setIsExecutingSql(true);
+      setSqlError("");
+      setSqlResults([]);
+
+      try {
+        const result = await executeDuckDbQuery(code);
+        if (!result.success) {
+          throw new Error(result.error || "SQL execution failed");
+        }
+
+        const columns = result.result?.columns ?? [];
+        const rows = result.result?.rows ?? [];
+
+        if (columns.length === 0 && rows.length === 0) {
+          setSqlResults([{ columns: [], values: [] }]);
+        } else {
+          setSqlResults([
+            {
+              columns,
+              values: rows,
+            },
+          ]);
+        }
+        markQuestionCompleted(selectedQuestionForPopup);
+      } catch (error) {
+        console.error("SQL execution error:", error);
+        setSqlError(error instanceof Error ? error.message : "An error occurred while executing SQL");
+      } finally {
+        setIsExecutingSql(false);
+      }
+    },
+    [
+      executeDuckDbQuery,
+      isDuckDbReady,
+      isExecutingSql,
+      isPreparingDuckDb,
+      markQuestionCompleted,
+      selectedQuestionForPopup,
+      selectedQuestionType,
+    ],
+  );
+
+  const handleSelectExercise = useCallback(
+    (sectionId: string, exercise: any) => {
+      // console.log('[HANDLE SELECT EXERCISE DEBUG] Called with:', {
+      //   sectionId,
+      //   exerciseId: exercise?.id,
+      //   exerciseTitle: exercise?.title,
+      //   hasSection_exercise_questions: Array.isArray(exercise?.section_exercise_questions),
+      //   section_exercise_questions_length: exercise?.section_exercise_questions?.length || 0,
+      //   hasQuestions: Array.isArray(exercise?.questions),
+      //   questions_length: exercise?.questions?.length || 0,
+      //   exerciseKeys: exercise ? Object.keys(exercise) : []
+      // });
+
+      if (!exercise) return;
+
+      // Ensure we exit practice mode so the embedded exercise view can render
+      handleExitPractice();
+
+      setSelectedSectionId(sectionId);
+      setSelectedResource({
+        sectionId,
+        kind: "exercise",
+        resourceId: exercise.id,
+      });
+
+      const questionList =
+        (Array.isArray(exercise.section_exercise_questions) && exercise.section_exercise_questions.length > 0
+          ? exercise.section_exercise_questions
+          : exercise.questions) || [];
+
+      // console.log('[HANDLE SELECT EXERCISE DEBUG] Question list:', {
+      //   questionListLength: questionList.length,
+      //   firstQuestion: questionList[0]
+      //     ? {
+      //         id: questionList[0].id,
+      //         text: questionList[0].question_text || questionList[0].text,
+      //         type: questionList[0].type || questionList[0].question_type,
+      //       }
+      //     : null,
+      // });
+
+      if (questionList.length > 0) {
+        const firstQuestion = questionList[0];
+        // console.log('[HANDLE SELECT EXERCISE DEBUG] Setting first question as selected');
+        setActiveExerciseQuestion(
+          {
+            ...firstQuestion,
+            exerciseId: exercise.id ? String(exercise.id) : null,
+            exerciseTitle: exercise.title,
+            exerciseDescription: exercise.description,
+            exerciseDataset: normalizeCreationSql(exercise.dataset),
+          },
+          0,
+          exercise,
+        );
+      } else {
+        // console.log('[HANDLE SELECT EXERCISE DEBUG] No questions found, clearing selection');
+        setSelectedQuestionForPopup(null);
+      }
+
+      setShowQuestionPopup(false);
+    },
+    [setActiveExerciseQuestion, handleExitPractice],
+  );
+
+  const handleNavigateExerciseQuestion = useCallback(
+    (direction: 1 | -1) => {
+      if (!activeExercise || !selectedQuestionForPopup || !activeExerciseQuestions.length) {
+        return;
+      }
+
+      const currentIndex = activeExerciseQuestions.findIndex(
+        (question: any) => String(question.id) === String(selectedQuestionForPopup.id),
+      );
+
+      if (currentIndex === -1) {
+        return;
+      }
+
+      const targetIndex = currentIndex + direction;
+      if (targetIndex < 0 || targetIndex >= activeExerciseQuestions.length) {
+        return;
+      }
+
+      const targetQuestion = activeExerciseQuestions[targetIndex];
+      if (!targetQuestion) {
+        return;
+      }
+
+      setActiveExerciseQuestion(targetQuestion, targetIndex);
+    },
+    [activeExercise, activeExerciseQuestions, selectedQuestionForPopup, setActiveExerciseQuestion],
+  );
+
+  const handleSelectExerciseQuestionTab = useCallback(
+    (targetIndex: number) => {
+      if (!activeExerciseQuestions.length) {
+        return;
+      }
+      const question = activeExerciseQuestions[targetIndex];
+      if (!question) {
+        return;
+      }
+
+      let currentActiveIndex = -1;
+      if (selectedQuestionForPopup) {
+        currentActiveIndex = activeExerciseQuestions.findIndex((candidate, candidateIndex) => {
+          const candidateKey = getExerciseQuestionKey(candidate, candidateIndex);
+          const selectedKey = getExerciseQuestionKey(selectedQuestionForPopup, candidateIndex);
+          return candidateKey === selectedKey;
+        });
+      }
+
+      if (currentActiveIndex === targetIndex) {
+        return;
+      }
+
+      setActiveExerciseQuestion(question, targetIndex);
+    },
+    [activeExerciseQuestions, selectedQuestionForPopup, setActiveExerciseQuestion],
+  );
 
   // Fetch exercise datasets when exercise is selected
   useEffect(() => {
@@ -1350,6 +2042,420 @@ export function SubjectLearningInterface({
       fetchExerciseDatasets(activeExercise.id);
     }
   }, [activeExercise?.id, fetchExerciseDatasets]);
+
+  const exerciseDatasetList = useMemo(() => {
+    if (!activeExercise?.id) {
+      return [];
+    }
+    return exerciseDatasets[activeExercise.id] || [];
+  }, [activeExercise?.id, exerciseDatasets]);
+
+  const availableSqlDatasets = useMemo(() => {
+    if (selectedQuestionType !== "sql") {
+      return [];
+    }
+
+    type SqlDataset = {
+      id: string;
+      name: string;
+      description?: string;
+      placeholders?: string[];
+      creation_sql?: string;
+      table_name?: string;
+      data?: any[];
+      columns?: string[];
+    };
+
+    const datasets: SqlDataset[] = [];
+    const seen = new Set<string>();
+
+    const pushDataset = (dataset: SqlDataset) => {
+      if (!dataset) return;
+      const normalizedCreationSql = normalizeCreationSql(dataset.creation_sql);
+      const normalizedDataset: SqlDataset = {
+        ...dataset,
+        creation_sql: normalizedCreationSql,
+      };
+      const key =
+        normalizedCreationSql?.trim() ||
+        (normalizedDataset.table_name
+          ? `${normalizedDataset.table_name}:${Array.isArray(normalizedDataset.data) ? normalizedDataset.data.length : 0}`
+          : normalizedDataset.id);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      datasets.push(normalizedDataset);
+    };
+
+    if (questionDataset) {
+      pushDataset({
+        id: `question-dataset:${questionDataset.id ?? "inline"}`,
+        name: questionDataset.name || "Question Dataset",
+        description: questionDataset.description || "Generated dataset for this question",
+        placeholders: questionDataset.columns || questionDataset.placeholders,
+        creation_sql:
+          typeof questionDataset?.schema_info?.creation_sql === "string"
+            ? questionDataset.schema_info.creation_sql
+            : typeof questionDataset?.creation_sql === "string"
+            ? questionDataset.creation_sql
+            : undefined,
+        table_name: questionDataset.table_name,
+        data: questionDataset.data,
+        columns: questionDataset.columns,
+      });
+    }
+
+    const inlineQuestionDataset = (selectedQuestionForPopup as any)?.dataset;
+    if (typeof inlineQuestionDataset === "string" && inlineQuestionDataset.trim()) {
+      pushDataset({
+        id: `question-inline:${selectedQuestionForPopup?.id ?? "inline"}`,
+        name: selectedQuestionForPopup?.exerciseTitle || "Question Dataset",
+        description: "Dataset attached to question",
+        creation_sql: inlineQuestionDataset,
+      });
+    } else if (inlineQuestionDataset && typeof inlineQuestionDataset === "object") {
+      pushDataset({
+        id: `question-inline:${selectedQuestionForPopup?.id ?? "inline"}`,
+        name: inlineQuestionDataset.name || selectedQuestionForPopup?.exerciseTitle || "Question Dataset",
+        description: inlineQuestionDataset.description,
+        creation_sql: inlineQuestionDataset.creation_sql ?? inlineQuestionDataset.sql,
+        table_name: inlineQuestionDataset.table_name,
+        data: inlineQuestionDataset.data,
+        columns: inlineQuestionDataset.columns,
+        placeholders: inlineQuestionDataset.placeholders,
+      });
+    }
+
+    const questionExerciseDataset = (selectedQuestionForPopup as any)?.exerciseDataset;
+    if (typeof questionExerciseDataset === "string" && questionExerciseDataset.trim()) {
+      pushDataset({
+        id: `question-exercise:${selectedQuestionForPopup?.id ?? "inline"}`,
+        name: selectedQuestionForPopup?.exerciseTitle || "Exercise Dataset",
+        description: "Exercise-level dataset",
+        creation_sql: questionExerciseDataset,
+      });
+    }
+
+    if (currentExerciseData?.context?.data_creation_sql) {
+      pushDataset({
+        id: `exercise-context:${currentExerciseData.exercise?.id ?? "context"}`,
+        name: currentExerciseData.exercise?.title || "Generated Dataset",
+        description: currentExerciseData.context?.dataset_description,
+        placeholders: Array.isArray(currentExerciseData.context?.expected_cols_list)
+          ? currentExerciseData.context.expected_cols_list.flat()
+          : undefined,
+        creation_sql: currentExerciseData.context.data_creation_sql,
+      });
+    }
+
+    if (activeExercise?.dataset && typeof activeExercise.dataset === "string") {
+      pushDataset({
+        id: `active-exercise-dataset:${activeExercise.id}`,
+        name: activeExercise.title || "Exercise Dataset",
+        description: "Dataset provided at exercise level",
+        creation_sql: activeExercise.data,
+      });
+    }
+
+    exerciseDatasetList.forEach((dataset: any, index: number) => {
+      pushDataset({
+        id: `exercise-${activeExercise?.id ?? "exercise"}-${dataset.id ?? index}`,
+        name: dataset.name || `Dataset ${index + 1}`,
+        description: dataset.description,
+        placeholders: dataset.placeholders || dataset.columns,
+        creation_sql:
+          dataset.creation_sql ??
+          dataset.sql ??
+          dataset.data ??
+          dataset.schema_info?.creation_sql,
+        table_name: dataset.table_name,
+        data: dataset.data,
+        columns: dataset.columns,
+      });
+    });
+
+    return datasets;
+  }, [
+    selectedQuestionType,
+    questionDataset,
+    selectedQuestionForPopup,
+    currentExerciseData,
+    activeExercise,
+    exerciseDatasetList,
+  ]);
+
+  const datasetLoadSignature = useMemo(
+    () =>
+      JSON.stringify(
+        availableSqlDatasets.map((dataset) => ({
+          id: dataset.id,
+          creation: dataset.creation_sql,
+          table: dataset.table_name,
+          rows: Array.isArray(dataset.data) ? dataset.data.length : 0,
+        })),
+      ),
+    [availableSqlDatasets],
+  );
+
+  useEffect(() => {
+    if (!selectedQuestionForPopup) {
+      setSqlCode('');
+      setSqlResults([]);
+      setDuckDbTables([]);
+      setDuckDbSetupError(null);
+    }
+  }, [selectedQuestionForPopup]);
+
+  useEffect(() => {
+    if (!selectedQuestionForPopup || selectedQuestionType !== "sql") {
+      setDuckDbTables([]);
+      setDuckDbSetupError(null);
+      setIsPreparingDuckDb(false);
+      return;
+    }
+
+    if (!isDuckDbReady) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const splitSqlStatements = (sql: string) => {
+      const statements: string[] = [];
+      let current = "";
+      let inSingleQuote = false;
+      let inDoubleQuote = false;
+      let inBacktick = false;
+
+      for (let i = 0; i < sql.length; i++) {
+        const char = sql[i];
+        const prevChar = sql[i - 1];
+
+        if (char === "'" && prevChar !== "\\" && !inDoubleQuote && !inBacktick) {
+          inSingleQuote = !inSingleQuote;
+        } else if (char === '"' && prevChar !== "\\" && !inSingleQuote && !inBacktick) {
+          inDoubleQuote = !inDoubleQuote;
+        } else if (char === "`" && prevChar !== "\\" && !inSingleQuote && !inDoubleQuote) {
+          inBacktick = !inBacktick;
+        }
+
+        if (char === ";" && !inSingleQuote && !inDoubleQuote && !inBacktick) {
+          if (current.trim().length > 0) {
+            statements.push(current.trim());
+          }
+          current = "";
+        } else {
+          current += char;
+        }
+      }
+
+      if (current.trim().length > 0) {
+        statements.push(current.trim());
+      }
+
+      return statements;
+    };
+
+    const sanitizeSql = (sql: string) =>
+      sql
+        .replace(/--.*$/gm, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+
+    const escapeIdentifier = (value: string) => value.replace(/"/g, '""');
+
+    const resetDatabase = async () => {
+      const result = await executeDuckDbQuery("SHOW TABLES;");
+      if (!result.success || !result.result) {
+        return;
+      }
+
+      for (const row of result.result.rows) {
+        const tableName = row?.[0];
+        if (!tableName) continue;
+        await executeDuckDbQuery(`DROP TABLE IF EXISTS "${escapeIdentifier(String(tableName))}"`);
+      }
+    };
+
+    const prepareDatasets = async () => {
+      // console.log("[DuckDB] Preparing datasets...", {
+      //   questionId: selectedQuestionForPopup?.id,
+      //   datasets: availableSqlDatasets.map((dataset) => ({
+      //     id: dataset.id,
+      //     hasCreationSql: Boolean(dataset.creation_sql),
+      //     tableName: dataset.table_name,
+      //   })),
+      // });
+
+      const executedStatements = new Set<string>();
+
+      const executeSqlBlock = async (sql?: string) => {
+        if (!sql) {
+          return;
+        }
+
+        const sanitized = sanitizeSql(sql);
+        for (const statement of splitSqlStatements(sanitized)) {
+          const normalized = statement.replace(/\s+/g, " ").trim().toLowerCase();
+          if (!normalized || executedStatements.has(normalized)) {
+            continue;
+          }
+
+          const result = await executeDuckDbQuery(statement);
+          if (!result.success) {
+            throw new Error(result.error || "Failed to execute SQL statement");
+          }
+
+          executedStatements.add(normalized);
+        }
+      };
+
+      setIsPreparingDuckDb(true);
+      setDuckDbSetupError(null);
+      setSqlResults([]);
+      setSqlError('');
+
+      try {
+        await resetDatabase();
+
+        for (const dataset of availableSqlDatasets) {
+          if (cancelled) {
+            return;
+          }
+
+          const creationSql = normalizeCreationSql(dataset.creation_sql);
+          if (creationSql) {
+            await executeSqlBlock(creationSql);
+          } else if (
+            dataset.table_name &&
+            Array.isArray(dataset.data) &&
+            dataset.data.length > 0
+          ) {
+            const loaded = await loadDuckDbDataset(dataset.table_name, dataset.data, dataset.columns);
+            if (!loaded) {
+              throw new Error(`Failed to load dataset ${dataset.table_name}`);
+            }
+          }
+        }
+
+        const tablesResult = await executeDuckDbQuery("SHOW TABLES;");
+        if (!cancelled) {
+          if (tablesResult.success && tablesResult.result) {
+            const tables = tablesResult.result.rows
+              .map((row) => row?.[0])
+              .filter((value): value is string => Boolean(value));
+            setDuckDbTables(tables);
+          } else {
+            setDuckDbTables([]);
+          }
+        }
+
+        console.log("[DuckDB] Datasets ready.");
+      } catch (error) {
+        console.error("[DuckDB] Failed to prepare datasets:", error);
+        if (!cancelled) {
+          setDuckDbTables([]);
+          setDuckDbSetupError(
+            error instanceof Error ? error.message : "Failed to prepare SQL datasets",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsPreparingDuckDb(false);
+        }
+      }
+    };
+
+    prepareDatasets();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    availableSqlDatasets,
+    datasetLoadSignature,
+    executeDuckDbQuery,
+    loadDuckDbDataset,
+    isDuckDbReady,
+    selectedQuestionForPopup,
+    selectedQuestionType,
+  ]);
+
+  useEffect(() => {
+    // console.log('[AUTO-SELECT DEBUG] Effect triggered:', {
+    //   resourceKind: selectedResource?.kind,
+    //   activeExercise: activeExercise ? {
+    //     id: activeExercise.id,
+    //     title: activeExercise.title,
+    //     hasQuestions: activeExercise.section_exercise_questions?.length || activeExercise.questions?.length || 0
+    //   } : null,
+    //   selectedQuestionForPopup: selectedQuestionForPopup?.id,
+    // });
+
+    if (selectedResource?.kind !== "exercise") {
+      // console.log('[AUTO-SELECT DEBUG] Not exercise kind, returning');
+      return;
+    }
+
+    if (!activeExercise) {
+      // console.log('[AUTO-SELECT DEBUG] No active exercise, clearing selection');
+      setSelectedQuestionForPopup(null);
+      return;
+    }
+
+    const questions =
+      (Array.isArray(activeExercise.section_exercise_questions) && activeExercise.section_exercise_questions.length > 0
+        ? activeExercise.section_exercise_questions
+        : activeExercise.questions) || [];
+
+    // console.log('[AUTO-SELECT DEBUG] Questions found:', questions.length, questions);
+
+    const currentExerciseId =
+      selectedQuestionForPopup && "exerciseId" in selectedQuestionForPopup
+        ? String((selectedQuestionForPopup as any).exerciseId)
+        : null;
+    const activeExerciseId = activeExercise?.id ? String(activeExercise.id) : null;
+
+    if (!questions.length) {
+      // console.log('[AUTO-SELECT DEBUG] No questions, clearing selection');
+      if (currentExerciseId && activeExerciseId && currentExerciseId === activeExerciseId) {
+        return;
+      }
+      setSelectedQuestionForPopup(null);
+      return;
+    }
+
+    const currentQuestionId = selectedQuestionForPopup?.id;
+    const hasCurrentSelection =
+      currentQuestionId && currentExerciseId && activeExerciseId && currentExerciseId === activeExerciseId
+        ? questions.some((q: any) => String(q.id) === String(currentQuestionId))
+        : false;
+
+    if (hasCurrentSelection) {
+      // console.log('[AUTO-SELECT DEBUG] Has current selection, keeping it');
+      return;
+    }
+
+    const firstQuestion = questions[0];
+    // console.log('[AUTO-SELECT DEBUG] Setting first question:', firstQuestion);
+    setActiveExerciseQuestion(
+      {
+        ...firstQuestion,
+        exerciseId: activeExercise.id ? String(activeExercise.id) : null,
+        exerciseTitle: activeExercise.title,
+        exerciseDescription: activeExercise.description,
+        exerciseDataset: normalizeCreationSql(activeExercise.dataset),
+      },
+      0,
+    );
+  }, [
+    selectedResource?.kind,
+    activeExercise,
+    selectedQuestionForPopup,
+    sectionExercises, // Add this dependency so useEffect runs when exercises are loaded
+    activeExerciseQuestions,
+    setActiveExerciseQuestion,
+  ]);
 
   // Check if current lecture content is a video
   const isLectureVideo = useMemo(() => {
@@ -1375,13 +2481,13 @@ export function SubjectLearningInterface({
   // Scroll detection for floating video player
   useEffect(() => {
     if (!isLectureVideo || !lectureContent) {
-      console.log('Floating player: Not a video or no content', { isLectureVideo, lectureContent });
+      // console.log('Floating player: Not a video or no content', { isLectureVideo, lectureContent });
       return;
     }
 
     const checkFloatingPlayer = () => {
       if (!videoContainerRef.current) {
-        console.log('Floating player: No video container ref');
+        // console.log('Floating player: No video container ref');
         return;
       }
 
@@ -1389,7 +2495,7 @@ export function SubjectLearningInterface({
       if (showFloatingPlayer) {
         // Only hide if main video gets focused (user clicked back to main area)
         if (isMainVideoFocused) {
-          console.log('Hiding floating player - main video focused');
+          // console.log('Hiding floating player - main video focused');
           setShowFloatingPlayer(false);
           setIsFloatingPlayerManuallyClosed(false);
         }
@@ -1399,18 +2505,18 @@ export function SubjectLearningInterface({
       const rect = videoContainerRef.current.getBoundingClientRect();
       const isVideoOutOfView = rect.bottom < 0 || rect.top > window.innerHeight;
 
-      console.log('Floating player scroll check:', {
-        isVideoOutOfView,
-        isVideoFocused: isMainVideoFocused,
-        rectBottom: rect.bottom,
-        rectTop: rect.top,
-        windowHeight: window.innerHeight,
-        showFloatingPlayer
-      });
+      // console.log('Floating player scroll check:', {
+      //   isVideoOutOfView,
+      //   isVideoFocused: isMainVideoFocused,
+      //   rectBottom: rect.bottom,
+      //   rectTop: rect.top,
+      //   windowHeight: window.innerHeight,
+      //   showFloatingPlayer
+      // });
 
       // Show floating player when video goes out of view AND main video is not focused AND not manually closed
       if (isVideoOutOfView && !isMainVideoFocused && !isFloatingPlayerManuallyClosed) {
-        console.log('Showing floating player - video out of view and not focused');
+        // console.log('Showing floating player - video out of view and not focused');
         // No need to manage video state since it's the same video element
         setShowFloatingPlayer(true);
       }
@@ -2022,293 +3128,17 @@ export function SubjectLearningInterface({
 
   };
 
-  const renderExerciseDisplay = () => {
-
-    if (selectedResource?.kind !== "exercise") {
-
-      return null;
-
-    }
-
-    // Show loading state if generation is in progress
-    if (isGeneratingContentForSection) {
-      return (
-        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden min-h-[460px] flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-8 h-8 border-4 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-gray-600">Generating exercise...</p>
-          </div>
-        </div>
-      );
-    }
-
-    // Determine the exercise type and language for syntax highlighting
-    const exerciseQuestions = activeExercise?.questions || [];
-    const firstQuestion = exerciseQuestions[0] || {};
-    const questionType = (firstQuestion.question_type || 'sql').toLowerCase();
-
-
-    // Map question types to display names and syntax highlighting
-    const languageConfig: Record<string, { name: string, starterCode: string }> = {
-      sql: {
-        name: 'SQL',
-        starterCode: `-- Write your SQL query here\n-- Example: SELECT * FROM table_name;\n\n`
-      },
-      python: {
-        name: 'Python',
-        starterCode: `# Write your Python code here\n\nprint("Hello, World!")\n\n`
-      },
-      google_sheets: {
-        name: 'Google Sheets Formula',
-        starterCode: `=SUM(A1:A10)\n\n`
-      },
-      statistics: {
-        name: 'Statistics',
-        starterCode: `# Statistical analysis\n\n`
-      },
-      reasoning: {
-        name: 'Reasoning',
-        starterCode: `# Logical reasoning\n\n`
-      },
-      math: {
-        name: 'Mathematics',
-        starterCode: `# Mathematical solution\n\n`
-      },
-      geometry: {
-        name: 'Geometry',
-        starterCode: `# Geometric solution\n\n`
-      }
-    };
-
-    const config = languageConfig[questionType] || languageConfig.sql;
-
-    // Get datasets from fetched data
-    const availableExerciseDatasets = exerciseDatasets[activeExercise?.id] || [];
-    const availableDatasets = questionType === 'sql' ? availableExerciseDatasets : [];
-
-    if (!activeExercise) {
-      return (
-        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6 min-h-[460px]">
-          <div className="text-center text-gray-500 mt-20">
-            No exercise available for this section.
-          </div>
-        </div>
-      );
-    }
-
-    return (
-
-      <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden">
-
-        {/* Top Section - Code Editor & Results (Full Width) */}
-        <div className={`flex flex-col ${
-          questionType === 'sql' ? 'bg-[#111827] text-white' :
-          'bg-[#f8fafc] text-gray-900'
-        }`} style={{ minHeight: '400px' }}>
-
-          <div className="px-4 py-2 border-b border-white/10 text-xs uppercase tracking-wide text-gray-600 dark:text-white/70 bg-white/5">
-            {config.name} Editor
-          </div>
-
-          <div className="flex-1 flex flex-col">
-            <textarea
-              value={sqlCode}
-              onChange={(e) => setSqlCode(e.target.value)}
-              className={`flex-1 font-mono text-sm p-4 outline-none resize-none ${
-                questionType === 'sql'
-                  ? 'bg-[#0f172a] text-green-400'
-                  : 'bg-white text-gray-900 border-x'
-              }`}
-              placeholder={`Write your ${config.name} code here...`}
-              spellCheck={false}
-            />
-
-            {/* SQL Results Display */}
-            {questionType === 'sql' && (sqlResults.length > 0 || sqlError) && (
-              <div className="border-t border-white/20 bg-black/40 max-h-64 overflow-auto">
-                <div className="px-4 py-2 border-b border-white/10 text-xs uppercase tracking-wide text-gray-400">
-                  Results
-                </div>
-                <div className="p-4 space-y-4">
-                  {sqlError && (
-                    <div className="bg-red-900/50 border border-red-600 text-red-400 p-3 rounded-lg text-sm">
-                      {sqlError}
-                    </div>
-                  )}
-                  {sqlResults.map((result, index) => (
-                    <div key={index} className="bg-white/5 rounded-lg">
-                      {result.columns.length > 0 && result.values.length > 0 && (
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs font-mono">
-                            <thead>
-                              <tr className="border-b border-white/20">
-                                {result.columns.map((col: string) => (
-                                  <th key={col} className="px-3 py-2 text-left text-green-400 font-semibold">
-                                    {col}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {result.values.slice(0, 10).map((row: any[], rowIndex: number) => (
-                                <tr key={rowIndex} className="border-b border-white/10">
-                                  {row.map((cell: any, cellIndex: number) => (
-                                    <td key={cellIndex} className="px-3 py-1 text-green-300">
-                                      {cell ?? 'NULL'}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                              {result.values.length > 10 && (
-                                <tr>
-                                  <td colSpan={result.columns.length} className="px-3 py-2 text-center text-green-500 text-xs italic">
-                                    ... {result.values.length - 10} more rows ...
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                      {result.columns.length === 0 && result.values.length === 0 && (
-                        <div className="text-green-400 text-sm p-2">
-                          Query executed successfully (no results to display)
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Python/Other programming results would go here */}
-            {questionType !== 'sql' && questionType !== 'java' && questionType !== 'c' && questionType !== 'cpp' && (
-              <div className="border-t border-white/20 bg-black/40 max-h-64 overflow-auto">
-                <div className="px-4 py-2 border-b border-white/10 text-xs uppercase tracking-wide text-gray-400">
-                  Results
-                </div>
-                <div className="p-4">
-                  <div className="text-green-400 text-sm">
-                    {questionType.charAt(0).toUpperCase() + questionType.slice(1)} execution not yet implemented
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="border-t border-white/10 p-3 flex gap-2 justify-between bg-black/20">
-            <div className="flex items-center gap-2">
-              {isExecutingSql && (
-                <div className="w-4 h-4 border-2 border-green-400 border-t-transparent rounded-full animate-spin"></div>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleExecuteSQL(sqlCode)}
-                disabled={isExecutingSql || !sqlCode.trim()}
-                className="rounded-md border border-green-500 bg-green-600/20 text-green-400 px-4 py-1.5 text-xs hover:bg-green-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Run
-              </button>
-              <button className="rounded-md bg-indigo-600 border border-indigo-600 px-4 py-1.5 text-xs text-white hover:bg-indigo-700">
-                Submit
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-        {/* Bottom Section - Tables Display */}
-        {questionType === 'sql' && (
-          <div className="border-t border-gray-200 bg-gray-50 p-6">
-            {availableDatasets.length > 0 ? (
-              <>
-                <div className="flex flex-wrap items-center gap-4 mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Available Tables</h3>
-                  <div className="flex gap-2">
-                    <div className="px-3 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full uppercase tracking-wider">
-                      {config.name}
-                    </div>
-                    {activeExercise?.difficulty && (
-                      <div className={`px-3 py-1 text-xs font-medium rounded-full uppercase tracking-wider ${
-                        activeExercise.difficulty === 'Beginner' ? 'bg-green-100 text-green-800' :
-                        activeExercise.difficulty === 'Intermediate' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
-                        {activeExercise.difficulty}
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-sm text-gray-600 flex-1">
-                    {activeExercise?.description || 'Work through the challenge and submit your solution when you are ready.'}
-                  </p>
-                </div>
-
-                {/* Tasks section */}
-                {exerciseQuestions.length > 0 && (
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-sm font-medium text-gray-900">Tasks:</h4>
-                      <button
-                        onClick={() => handleStartPractice(activeExercise)}
-                        className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition flex items-center gap-2"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h1m4 0h1m6-9v2.5A1.5 1.5 0 0118.5 9H21l-3 3-3-3h2.5A1.5 1.5 0 0116 7.5V5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-2.5" />
-                        </svg>
-                        Practice Mode
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {exerciseQuestions.map((question: PracticeExerciseQuestion, index: number) => (
-                        <div key={question.id || index} className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
-                          <p className="text-sm text-gray-700">{question.question_text}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Tables Overview */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {availableDatasets.map((dataset: any) => (
-                    <div key={dataset.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                      <div className="px-4 py-3 bg-gray-100 border-b border-gray-200">
-                        <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
-                          {dataset.name}
-                        </h4>
-                        <p className="text-xs text-gray-600 mt-1">
-                          {dataset.record_count || 'N/A'} rows • {(dataset.columns as string[] || []).length} columns
-                        </p>
-                      </div>
-
-                      <div className="p-4">
-                        {dataset.creation_sql && (
-                          <div className="mb-4">
-                            <div className="text-xs text-gray-500 mb-2">Dataset Creation SQL:</div>
-                            <div className="bg-gray-800 text-green-400 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
-                              {dataset.creation_sql}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <div className="text-center text-gray-500 py-8">
-                <p className="text-sm">No data available</p>
-              </div>
-            )}
-          </div>
-        )}
-
-      </div>
-
+  const isGeneratedExerciseActive =
+    !!(
+      currentExerciseData?.exercise?.id &&
+      selectedResource?.kind === "exercise" &&
+      selectedResource?.resourceId === currentExerciseData.exercise.id &&
+      selectedResource?.sectionId === selectedSectionId
     );
 
-  };
+  // const renderExerciseDisplay = () => {
+  //   // Deprecated: exercise content now rendered via renderQuestionPopup('embedded').
+  // };
 
   const renderQuizDisplay = () => {
 
@@ -2472,12 +3302,11 @@ export function SubjectLearningInterface({
                     <div
                       key={option.id || optIndex}
                       onClick={() => {
-                        if (option.text) {
-                          setQuizAnswers(prev => ({
-                            ...prev,
-                            [currentQuestion.id || currentQuizQuestionIndex.toString()]: [option.text]
-                          }));
-                        }
+                        const optionText = option.text || '';
+                        setQuizAnswers(prev => ({
+                          ...prev,
+                          [currentQuestion.id || currentQuizQuestionIndex.toString()]: [optionText]
+                        }));
                       }}
                       className={`cursor-pointer rounded-lg border-2 p-4 transition-all duration-200 ${
                         isSelected
@@ -2599,7 +3428,7 @@ export function SubjectLearningInterface({
     // Show current question
     if (currentAdaptiveQuestion) {
       const options = currentAdaptiveQuestion.options || [];
-      console.log(currentAdaptiveQuestion);
+      // console.log(currentAdaptiveQuestion);
 
       return (
         <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6">
@@ -2642,7 +3471,7 @@ export function SubjectLearningInterface({
                   <button
                     key={optionLabel}
                     onClick={() => setAdaptiveQuizAnswer(optionLabel)}
-                    disabled={loadingNextQuestion || showAdaptiveExplanation}
+                    disabled={submittingAdaptiveAnswer || showAdaptiveExplanation}
                     className={`w-full text-left p-4 rounded-lg border-2 transition ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-50'
@@ -2690,20 +3519,31 @@ export function SubjectLearningInterface({
             </div>
           )}
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-3">
             <button
-              onClick={handleAdaptiveQuizNext}
-              disabled={!adaptiveQuizAnswer || loadingNextQuestion}
+              onClick={handleAdaptiveQuizSubmit}
+              disabled={!adaptiveQuizAnswer || submittingAdaptiveAnswer || showAdaptiveExplanation}
               className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {loadingNextQuestion ? (
+              {submittingAdaptiveAnswer ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Loading...</span>
+                  <span>Submitting...</span>
                 </>
               ) : (
-                <span>Next</span>
+                <span>Submit</span>
               )}
+            </button>
+            <button
+              onClick={handleAdaptiveQuizNext}
+              disabled={
+                submittingAdaptiveAnswer ||
+                !showAdaptiveExplanation ||
+                !pendingAdaptiveQuestion
+              }
+              className="px-6 py-2.5 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>Next</span>
             </button>
           </div>
         </div>
@@ -2737,83 +3577,115 @@ export function SubjectLearningInterface({
 
   );
 
-  const renderQuestionPopup = () => {
-    if (!showQuestionPopup || !selectedQuestionForPopup) return null;
+  const renderQuestionPopup = (variant: "modal" | "embedded" = "modal") => {
+    const isEmbedded = variant === "embedded";
+
+    if (!selectedQuestionForPopup) {
+      if (isEmbedded) {
+        return (
+          <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg min-h-[320px] flex items-center justify-center">
+            <p className="text-sm text-gray-500">Select an exercise question to get started.</p>
+          </div>
+        );
+      }
+      return null;
+    }
+
+    if (!isEmbedded && !showQuestionPopup) {
+      return null;
+    }
 
     const question = selectedQuestionForPopup;
-    const questionType = (question.question_type || question.type || 'sql').toLowerCase();
+    const questionType = (question.question_type || question.type || "sql").toLowerCase();
+    const questionList = activeExerciseQuestions;
+    const currentQuestionIndex = questionList.findIndex(
+      (item: any) => String(item.id) === String(question.id),
+    );
+    const hasNextQuestion =
+      currentQuestionIndex >= 0 && currentQuestionIndex < questionList.length - 1;
+    const questionDifficulty =
+      (question as any).difficulty ||
+      (question as any).content?.difficulty ||
+      (question as any).question_difficulty ||
+      "";
+    const questionHint =
+      question.hint ||
+      (question as any).adaptive_note ||
+      (question as any).content?.hint ||
+      "";
 
-    // Language config for syntax highlighting
-    const languageConfig: Record<string, { name: string, starterCode: string }> = {
+    const languageConfig: Record<string, { name: string; starterCode: string }> = {
       sql: {
-        name: 'SQL',
-        starterCode: `-- Write your SQL query here\n-- ${question.text || question.question_text}\n\n-- Example solution:\n-- SELECT * FROM table_name;\n\n`
+        name: "SQL",
+        starterCode: `-- Write your SQL query here\n-- ${question.text || question.question_text}\n\n-- Example solution:\n-- SELECT * FROM table_name;\n\n`,
       },
       python: {
-        name: 'Python',
-        starterCode: `# Write your Python code here\n# ${question.text || question.question_text}\n\ndef solution():\n    # Your code here\n    pass\n\nsolution()\n`
+        name: "Python",
+        starterCode: `# Write your Python code here\n# ${question.text || question.question_text}\n\ndef solution():\n    # Your code here\n    pass\n\nsolution()\n`,
       },
       google_sheets: {
-        name: 'Google Sheets Formula',
-        starterCode: `=${question.text || question.question_text}\n\n`
+        name: "Google Sheets Formula",
+        starterCode: `=${question.text || question.question_text}\n\n`,
       },
       statistics: {
-        name: 'Statistics',
-        starterCode: `# Statistical analysis solution\n# ${question.text || question.question_text}\n\n`
+        name: "Statistics",
+        starterCode: `# Statistical analysis solution\n# ${question.text || question.question_text}\n\n`,
       },
       reasoning: {
-        name: 'Reasoning',
-        starterCode: `# Logical reasoning solution\n# ${question.text || question.question_text}\n\n`
+        name: "Reasoning",
+        starterCode: `# Logical reasoning solution\n# ${question.text || question.question_text}\n\n`,
       },
       math: {
-        name: 'Mathematics',
-        starterCode: `# Mathematical solution\n# ${question.text || question.question_text}\n\n`
+        name: "Mathematics",
+        starterCode: `# Mathematical solution\n# ${question.text || question.question_text}\n\n`,
       },
       geometry: {
-        name: 'Geometry',
-        starterCode: `# Geometric solution\n# ${question.text || question.question_text}\n\n`
-      }
+        name: "Geometry",
+        starterCode: `# Geometric solution\n# ${question.text || question.question_text}\n\n`,
+      },
     };
 
     const config = languageConfig[questionType] || languageConfig.sql;
 
-    // Available datasets for SQL exercises (from fetched dataset or fallback - remove sampleDatasets)
-    const availableDatasets = questionDataset ? [
-      {
-        id: questionDataset.id,
-        name: questionDataset.name || 'Question Dataset',
-        description: questionDataset.description || 'Generated dataset for this question',
-        placeholders: questionDataset.columns || [],
-        schema_info: questionDataset.schema_info,
-        creation_sql: questionDataset.schema_info?.creation_sql
-      }
-    ] : currentExerciseData?.context?.data_creation_sql ? [
-      {
-        id: 'generated_data',
-        name: 'Question Dataset',
-        description: currentExerciseData.context.dataset_description || 'Generated dataset for this question',
-        placeholders: currentExerciseData.context.expected_cols_list?.flat() || [],
-        creation_sql: currentExerciseData.context.data_creation_sql
-      }
-    ] : [];
+    const availableDatasets = questionType === "sql" ? availableSqlDatasets : [];
 
-    return (
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-          {/* Header */}
-          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900">Practice Question</h2>
-              <div className="flex items-center gap-2 mt-1">
-                <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                  questionType === 'sql' ? 'bg-blue-100 text-blue-800' :
-                  questionType === 'python' ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-gray-100 text-gray-800'
-                }`}>
-                  {config.name}
-                </span>
-              </div>
-            </div>
+    const headerTitle =
+      question.exerciseTitle || activeExercise?.title || selectedSection?.title || "Exercise";
+    const headerSubtitle =
+      question.exerciseDescription || activeExercise?.description || selectedSection?.overview || "";
+    const trimmedSubtitle =
+      typeof headerSubtitle === "string" && headerSubtitle.length > 160
+        ? `${headerSubtitle.slice(0, 157)}...`
+        : headerSubtitle;
+
+    const containerClass = isEmbedded
+      ? "flex flex-col rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden min-h-[520px]"
+      : "bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col";
+
+    const header = (
+      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">
+            {isEmbedded ? "Practice Exercise" : "Practice Question"}
+          </p>
+          <h2 className="mt-2 text-lg font-semibold text-gray-900 truncate">{headerTitle}</h2>
+          {trimmedSubtitle && (
+            <p className="mt-1 text-sm text-gray-600">{trimmedSubtitle}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            className={`px-2 py-1 text-xs font-medium rounded-full ${
+              questionType === "sql"
+                ? "bg-blue-100 text-blue-800"
+                : questionType === "python"
+                ? "bg-yellow-100 text-yellow-800"
+                : "bg-gray-100 text-gray-800"
+            }`}
+          >
+            {config.name}
+          </span>
+          {!isEmbedded && (
             <button
               onClick={() => {
                 setShowQuestionPopup(false);
@@ -2823,173 +3695,287 @@ export function SubjectLearningInterface({
             >
               <Circle className="h-6 w-6 text-gray-400 hover:text-gray-600" />
             </button>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
-            {/* Left: Question & Editor */}
-            <div className="flex flex-col min-h-0">
-              {/* Question */}
-              <div className="p-6 border-b border-gray-200">
-                <h3 className="text-lg font-medium text-gray-900 mb-3">Question:</h3>
-                <p className="text-gray-700 leading-relaxed">{question.text || question.question_text}</p>
-              </div>
-
-              {/* Code Editor */}
-              <div className="flex-1 flex flex-col min-h-0">
-                <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-                  {config.name} Editor
-                </div>
-                <textarea
-                  value={sqlCode}
-                  onChange={(e) => setSqlCode(e.target.value)}
-                  className={`flex-1 font-mono text-sm p-4 outline-none resize-none border-x ${
-                    questionType === 'sql'
-                      ? 'bg-[#0f172a] text-green-400'
-                      : 'bg-white text-gray-900 border-gray-200'
-                  }`}
-                  placeholder={config.starterCode}
-                  spellCheck={false}
-                />
-                <div className="border-t border-gray-200 p-3 flex gap-2 justify-between bg-gray-50">
-                  <div className="flex items-center gap-2">
-                    {isExecutingSql && (
-                      <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-                    )}
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleExecuteSQL(sqlCode)}
-                      disabled={isExecutingSql || !sqlCode.trim()}
-                      className="rounded-md border border-blue-500 bg-blue-600 text-white px-4 py-1.5 text-xs hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Run Code
-                    </button>
-                    <button className="rounded-md bg-indigo-600 border border-indigo-600 px-4 py-1.5 text-xs text-white hover:bg-indigo-700">
-                      Submit Solution
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Right: Results & Datasets */}
-            <div className="flex flex-col min-h-0 border-l border-gray-200">
-              {/* Results */}
-              <div className="flex-1 min-h-0 flex flex-col">
-                <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-                  Output
-                </div>
-                <div className="flex-1 overflow-auto p-4 bg-gray-900 text-green-400 font-mono text-sm">
-                  {sqlError && (
-                    <div className="text-red-400 bg-red-900/20 p-3 rounded-lg mb-4">
-                      {sqlError}
-                    </div>
-                  )}
-                  {sqlResults.map((result, index) => (
-                    <div key={index} className="mb-6">
-                      {result.columns.length > 0 && result.values.length > 0 && (
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs">
-                            <thead>
-                              <tr className="border-b border-green-500">
-                                {result.columns.map((col: string) => (
-                                  <th key={col} className="px-2 py-1 text-left text-green-200 font-semibold">
-                                    {col}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {result.values.slice(0, 10).map((row: any[], rowIndex: number) => (
-                                <tr key={rowIndex} className="border-b border-green-800">
-                                  {row.map((cell: any, cellIndex: number) => (
-                                    <td key={cellIndex} className="px-2 py-1 text-green-300">
-                                      {cell ?? 'NULL'}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                              {result.values.length > 10 && (
-                                <tr>
-                                  <td colSpan={result.columns.length} className="px-2 py-1 text-center text-green-500 text-xs italic">
-                                    ... {result.values.length - 10} more rows ...
-                                  </td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                      {result.columns.length === 0 && result.values.length === 0 && (
-                        <div className="text-green-400 text-sm">
-                          Query executed successfully (no results to display)
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {sqlResults.length === 0 && !sqlError && sqlCode.trim() && (
-                    <div className="text-gray-400 italic">
-                      Run your code to see results here...
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Available Datasets */}
-              {questionType === 'sql' && availableDatasets.length > 0 && (
-                <div className="border-t border-gray-200">
-                  <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-                    Available Datasets
-                  </div>
-                  <div className="p-4 space-y-4 max-h-80 overflow-y-auto">
-                    {availableDatasets.map((dataset) => (
-                      <div key={dataset.id} className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
-                        <div className="px-4 py-3 bg-gray-100 border-b border-gray-200">
-                          <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
-                            {dataset.name}
-                          </h4>
-                          {dataset.description && (
-                            <p className="text-xs text-gray-600 mt-1">{dataset.description}</p>
-                          )}
-                        </div>
-                        <div className="p-3">
-                          <div className="text-xs text-gray-600 mb-2">
-                            💡 Available columns: {(dataset as any).placeholders?.slice(0, 5).join(', ') || (dataset as any).table_name || 'No columns specified'}
-                          </div>
-                          {dataset.creation_sql && (
-                            <div className="mt-3">
-                              <div className="text-xs text-gray-500 mb-2">Dataset Creation SQL:</div>
-                              <div className="bg-gray-800 text-green-400 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
-                                {dataset.creation_sql}
-                              </div>
-                              <button
-                                onClick={() => {
-                                  setSqlCode(dataset.creation_sql);
-                                }}
-                                className="mt-2 px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 transition-colors"
-                              >
-                                Load Dataset SQL
-                              </button>
-                            </div>
-                          )}
-                          {loadingDataset && (
-                            <div className="text-xs text-blue-600 mt-2">
-                              Loading dataset information...
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          )}
         </div>
       </div>
     );
+
+    const questionTabsBar =
+      questionList.length > 0 ? (
+        <div className="px-6 py-3 border-b border-gray-200 bg-gray-50">
+          <div className="flex flex-wrap gap-2">
+            {questionList.map((questionItem: any, index: number) => {
+              const key = getExerciseQuestionKey(questionItem, index);
+              const status = questionCompletionStatus[key] === "completed";
+              const isActive = index === currentQuestionIndex;
+
+              return (
+                <button
+                  key={key}
+                  onClick={() => handleSelectExerciseQuestionTab(index)}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-full border transition ${
+                    isActive
+                      ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-white text-gray-700 border-gray-200 hover:border-indigo-200 hover:text-indigo-600"
+                  }`}
+                >
+                  {status ? (
+                    <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+                  ) : (
+                    <Circle className="h-3.5 w-3.5 text-gray-300" />
+                  )}
+                  <span>Question {index + 1}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null;
+
+    const content = (
+      <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
+        <div className="flex flex-col min-h-0">
+          <div className="p-6 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-medium text-gray-900">Question</h3>
+              {questionDifficulty && (
+                <span
+                  className={`px-2 py-1 text-xs font-medium rounded-full ${
+                    questionDifficulty === "Beginner"
+                      ? "bg-green-100 text-green-700"
+                      : questionDifficulty === "Intermediate"
+                      ? "bg-yellow-100 text-yellow-700"
+                      : "bg-red-100 text-red-700"
+                  }`}
+                >
+                  {questionDifficulty}
+                </span>
+              )}
+            </div>
+            <p className="text-gray-700 leading-relaxed">{question.text || question.question_text}</p>
+            {questionHint && (
+              <p className="mt-3 text-sm text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                Hint: {questionHint}
+              </p>
+            )}
+          </div>
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
+              {config.name} Editor
+            </div>
+            <textarea
+              value={sqlCode}
+              onChange={(e) => setSqlCode(e.target.value)}
+              className={`flex-1 font-mono text-sm p-4 outline-none resize-none border-x ${
+                questionType === "sql"
+                  ? "bg-[#0f172a] text-green-400"
+                  : "bg-white text-gray-900 border-gray-200"
+              }`}
+              placeholder={config.starterCode}
+              spellCheck={false}
+            />
+            <div className="border-t border-gray-200 p-3 flex gap-2 justify-between bg-gray-50">
+              <div className="flex items-center gap-2">
+                {isExecutingSql && (
+                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleExecuteSQL(sqlCode)}
+                  disabled={
+                    isExecutingSql ||
+                    !sqlCode.trim() ||
+                    !isDuckDbReady ||
+                    isPreparingDuckDb
+                  }
+                  className="rounded-md border border-blue-500 bg-blue-600 text-white px-4 py-1.5 text-xs hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Run Code
+                </button>
+                <button
+                  onClick={() => markQuestionCompleted(question)}
+                  className="rounded-md bg-indigo-600 border border-indigo-600 px-4 py-1.5 text-xs text-white hover:bg-indigo-700"
+                >
+                  Submit Solution
+                </button>
+                <button
+                  onClick={() => handleNavigateExerciseQuestion(1)}
+                  disabled={!hasNextQuestion || isPreparingDuckDb || isDuckDbLoading}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-md bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next Question
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-col min-h-0 border-l border-gray-200">
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
+              Output
+            </div>
+            <div className="flex-1 overflow-auto p-4 bg-gray-900 text-green-400 font-mono text-sm">
+              {duckDbError && (
+                <div className="text-red-300 bg-red-900/40 border border-red-800 px-3 py-2 rounded mb-3">
+                  {duckDbError}
+                </div>
+              )}
+              {duckDbSetupError && (
+                <div className="text-red-300 bg-red-900/30 border border-red-800 px-3 py-2 rounded mb-3">
+                  {duckDbSetupError}
+                </div>
+              )}
+              {(isDuckDbLoading || isPreparingDuckDb) && (
+                <div className="flex items-center gap-2 text-xs text-blue-200 mb-3">
+                  <div className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
+                  <span>{isDuckDbLoading ? "Initializing SQL engine..." : "Loading datasets into DuckDB..."}</span>
+                </div>
+              )}
+              {!isDuckDbLoading && !isPreparingDuckDb && duckDbTables.length > 0 && (
+                <div className="text-xs text-green-300 mb-3">
+                  Tables ready:{" "}
+                  {duckDbTables.slice(0, 5).join(", ")}
+                  {duckDbTables.length > 5 ? `, +${duckDbTables.length - 5} more` : ""}
+                </div>
+              )}
+              {sqlError && (
+                <div className="text-red-400 bg-red-900/20 p-3 rounded-lg mb-4">{sqlError}</div>
+              )}
+              {sqlResults.map((result, index) => (
+                <div key={index} className="mb-6">
+                  {result.columns.length > 0 && result.values.length > 0 && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-green-500">
+                            {result.columns.map((col: string) => (
+                              <th key={col} className="px-2 py-1 text-left text-green-200 font-semibold">
+                                {col}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.values.slice(0, 10).map((row: any[], rowIndex: number) => (
+                            <tr key={rowIndex} className="border-b border-green-800">
+                              {row.map((cell: any, cellIndex: number) => (
+                                <td key={cellIndex} className="px-2 py-1 text-green-300">
+                                  {cell ?? "NULL"}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                          {result.values.length > 10 && (
+                            <tr>
+                              <td
+                                colSpan={result.columns.length}
+                                className="px-2 py-1 text-center text-green-500 text-xs italic"
+                              >
+                                ... {result.values.length - 10} more rows ...
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {result.columns.length === 0 && result.values.length === 0 && (
+                    <div className="text-green-400 text-sm">Query executed successfully (no results to display)</div>
+                  )}
+                </div>
+              ))}
+              {sqlResults.length === 0 && !sqlError && sqlCode.trim() && (
+                <div className="text-gray-400 italic">Run your code to see results here...</div>
+              )}
+            </div>
+          </div>
+          {questionType === "sql" && (
+            <div className="border-t border-gray-200">
+              <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
+                Available Datasets
+              </div>
+              <div className="p-4 space-y-4 max-h-80 overflow-y-auto">
+                {(isDuckDbLoading || isPreparingDuckDb) && (
+                  <div className="flex items-center gap-2 text-xs text-blue-600">
+                    <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                    <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Preparing datasets..."}</span>
+                  </div>
+                )}
+                {!isDuckDbLoading && !isPreparingDuckDb && duckDbTables.length > 0 && (
+                  <div className="text-xs text-green-600">
+                    Tables ready in DuckDB: {duckDbTables.slice(0, 5).join(", ")}
+                    {duckDbTables.length > 5 ? `, +${duckDbTables.length - 5} more` : ""}
+                  </div>
+                )}
+                {availableDatasets.length > 0 ? (
+                  availableDatasets.map((dataset: any) => (
+                    <div key={dataset.id} className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="px-4 py-3 bg-gray-100 border-b border-gray-200">
+                        <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
+                          {dataset.name}
+                        </h4>
+                        {dataset.description && (
+                          <p className="text-xs text-gray-600 mt-1">{dataset.description}</p>
+                        )}
+                      </div>
+                      <div className="p-3 space-y-3">
+                        <div className="text-xs text-gray-600">
+                          💡 Available columns:{" "}
+                          {Array.isArray(dataset.placeholders) && dataset.placeholders.length
+                            ? dataset.placeholders.slice(0, 5).join(", ")
+                            : dataset.table_name || "No columns specified"}
+                        </div>
+                        {dataset.creation_sql && (
+                          <div>
+                            <div className="text-xs text-gray-500 mb-2">Dataset Creation SQL:</div>
+                            <div className="bg-gray-800 text-green-400 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
+                              {dataset.creation_sql}
+                            </div>
+                            <button
+                              onClick={() => setSqlCode(dataset.creation_sql)}
+                              className="mt-2 px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 transition-colors"
+                            >
+                              Load Dataset SQL
+                            </button>
+                          </div>
+                        )}
+                        {loadingDataset && (
+                          <div className="text-xs text-blue-600">Loading dataset information...</div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-xs text-gray-500">No dataset information available.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+
+    const container = (
+      <div className={containerClass}>
+        {header}
+        {questionTabsBar}
+        {content}
+      </div>
+    );
+
+    if (isEmbedded) {
+      return container;
+    }
+
+    return (
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        {container}
+      </div>
+    );
   };
+
 
   let contentDisplay;
 
@@ -3033,12 +4019,18 @@ export function SubjectLearningInterface({
   } else if (selectedResource?.kind === "lecture") {
     contentDisplay = renderLectureDisplay();
   } else if (selectedResource?.kind === "exercise") {
-    contentDisplay = renderExerciseDisplay();
+    contentDisplay = renderQuestionPopup("embedded");
   } else if (selectedResource?.kind === "quiz") {
     contentDisplay = renderQuizDisplay();
   } else {
     contentDisplay = renderEmptyDisplay();
   }
+
+  const activePracticeTitle = isPracticeMode && selectedPracticeExercise
+    ? selectedPracticeExercise.title
+    : isGeneratedExerciseActive
+      ? currentExerciseData?.exercise?.title || null
+      : null;
 
   return (
 
@@ -3189,6 +4181,13 @@ export function SubjectLearningInterface({
       </div>
 
       <div className="space-y-6 lg:max-h-[calc(100dvh-4rem)] lg:overflow-y-auto lg:pr-2 lg:[scrollbar-width:thin] lg:[&::-webkit-scrollbar]:w-2 lg:[&::-webkit-scrollbar-thumb]:rounded-full lg:[&::-webkit-scrollbar-thumb]:bg-slate-300/60 lg:hover:[&::-webkit-scrollbar-thumb]:bg-slate-400/70 lg:[&::-webkit-scrollbar-track]:bg-transparent">
+        {activePracticeTitle ? (
+          <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
+            <div className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">Practice Exercise</div>
+            <p className="mt-3 text-xl font-semibold text-gray-900">{activePracticeTitle}</p>
+          </div>
+        ) : (
+          <>
 
         <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
 
@@ -3240,35 +4239,38 @@ export function SubjectLearningInterface({
 
               <div className="p-2">
 
-                {(module.sections || []).map((section) => {
+                {(module.sections || []).map((section, moduleSectionIndex) => {
 
-                  const sectionIndex = allSections.findIndex((candidate) => candidate.id === section.id);
+                  const globalSectionIndex = allSections.findIndex((candidate) => candidate.id === section.id);
 
                   const isCurrentSection = section.id === selectedSectionId;
 
-                  const isCompleted = sectionIndex >= 0 ? currentSectionIndex > sectionIndex : false;
+                    const isCompleted = globalSectionIndex >= 0 ? currentSectionIndex > globalSectionIndex : false;
 
                   const lectures = getLectures(section);
-
+                  
                   const exercises = getExercises(section);
 
-                  const quizzes = getQuizzes(section);
+                    const quizzes = getQuizzes(section);
 
-                  const isExpanded = isCurrentSection;
+                    const isExpanded = isCurrentSection;
 
-                  const matchesLecture =
+                    const matchesLecture =
 
-                    selectedResource?.sectionId === section.id && selectedResource.kind === "lecture";
+                      selectedResource?.sectionId === section.id && selectedResource.kind === "lecture";
 
-                  const defaultLectureKey = lectures.length ? getLectureKey(lectures[0], 0) : null;
+                    const defaultLectureKey = lectures.length ? getLectureKey(lectures[0], 0) : null;
 
-                  const activeLectureKey = matchesLecture
+                    const activeLectureKey = matchesLecture
 
-                    ? selectedResource.resourceId ?? defaultLectureKey
+                      ? selectedResource.resourceId ?? defaultLectureKey
 
-                    : null;
+                      : null;
 
-                  return (
+                    const shouldHideGenerationButtons = moduleIndex === 0 && moduleSectionIndex === 0;
+                    // const shouldHideGenerationButtons = exercises.length > 0;
+
+                    return (
 
                     <div key={section.id} className="mb-2 last:mb-0">
 
@@ -3392,7 +4394,7 @@ export function SubjectLearningInterface({
 
                                 }}
 
-                                className={`w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition ${
+                               className={`w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition ${
 
                                   isActiveLecture ? "bg-indigo-100 text-indigo-900" : "text-gray-600 hover:bg-gray-50"
 
@@ -3456,30 +4458,24 @@ export function SubjectLearningInterface({
                                           <button
                                             key={`${exercise.id}-question-${question.id || questionIndex}`}
                                             onClick={() => {
-                                              setSelectedSectionId(section.id);
-                                              setSelectedResource({
-                                                sectionId: section.id,
-                                                kind: "exercise",
-                                                resourceId: exercise.id,
-                                              });
-                                              setSelectedQuestionForPopup({ 
-                                                ...question, 
-                                                exerciseTitle: exercise.title,
-                                                exerciseDescription: exercise.description,
-                                                exerciseDataset: exercise.dataset 
-                                              });
+                                              handleSelectExercise(section.id, exercise);
+                                              setActiveExerciseQuestion(
+                                                {
+                                                  ...question,
+                                                  exerciseTitle: exercise.title,
+                                                  exerciseDescription: exercise.description,
+                                                  exerciseDataset: normalizeCreationSql(exercise.dataset),
+                                                },
+                                                questionIndex,
+                                              );
                                               setShowQuestionPopup(true);
-                                              // Fetch dataset for this question
-                                              if (question.id) {
-                                                fetchQuestionDataset(question.id);
-                                              }
                                             }}
                                             className={`w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition ${
                                               isActiveQuestion ? "bg-indigo-100 text-indigo-900" : "text-gray-600 hover:bg-gray-50"
                                             }`}
                                           >
                                             <Code className="h-4 w-4" />
-                                            <span className="text-left truncate">{question.text}</span>
+                                            <span className="text-left truncate">{question.question_text || question.text}</span>
                                           </button>
                                         );
                                       })}
@@ -3488,7 +4484,10 @@ export function SubjectLearningInterface({
                                 </div>
                               ));
                             } else if (exercises.length > 0) {
+
                               // Fallback to generic exercises
+                              console.log("Using generic exercises:", exercises);
+
                               return exercises.map((exercise, exerciseIndex) => (
                                 <div key={exercise.id || exerciseIndex} className="space-y-2">
                                   <div className="p-3 bg-gray-50 rounded-lg">
@@ -3498,14 +4497,7 @@ export function SubjectLearningInterface({
                                     )}
                                   </div>
                                   <button
-                                    onClick={() => {
-                                      setSelectedSectionId(section.id);
-                                      setSelectedResource({
-                                        sectionId: section.id,
-                                        kind: "exercise",
-                                        resourceId: exercise.id,
-                                      });
-                                    }}
+                                    onClick={() => handleSelectExercise(section.id, exercise)}
                                     className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition text-gray-600 hover:bg-gray-50"
                                   >
                                     <Code className="h-4 w-4" />
@@ -3518,33 +4510,44 @@ export function SubjectLearningInterface({
                             return null;
                           })()}
 
-                          {/* Static generation menus - Hide Exercise and Adaptive Quiz buttons for first section of first module */}
-                          {!(moduleIndex === 0 && (module.sections || []).indexOf(section) === 0) && (
+                          {!shouldHideGenerationButtons && (
                             <>
+                              {/* Generate Exercise Button */}
                               <button
                                 onClick={() => handleGenerateExercise(section)}
                                 disabled={generatingExercise[section.id]}
-                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-blue-50 hover:bg-blue-100 text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
                               >
                                 {generatingExercise[section.id] ? (
-                                  <div className="w-4 h-4 border border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                                  <>
+                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    <span>Generating...</span>
+                                  </>
                                 ) : (
-                                  <Code className="w-4 h-4" />
+                                  <>
+                                    <Code className="h-4 w-4" />
+                                    <span>Generate Practice Exercise</span>
+                                  </>
                                 )}
-                                <span>Exercise</span>
                               </button>
 
+                              {/* Adaptive Quiz Button */}
                               <button
                                 onClick={() => handleStartAdaptiveQuiz(section)}
-                                disabled={loadingNextQuestion}
-                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-purple-50 hover:bg-purple-100 text-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={generatingQuiz[section.id] || isAdaptiveQuizMode}
+                                className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition bg-gradient-to-r from-green-500 to-teal-500 text-white hover:from-green-600 hover:to-teal-600 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
                               >
-                                {loadingNextQuestion ? (
-                                  <div className="w-4 h-4 border border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+                                {generatingQuiz[section.id] ? (
+                                  <>
+                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    <span>Starting...</span>
+                                  </>
                                 ) : (
-                                  <CheckSquare className="w-4 h-4" />
+                                  <>
+                                    <Activity className="h-4 w-4" />
+                                    <span>Start Adaptive Quiz</span>
+                                  </>
                                 )}
-                                <span>Adaptive Quiz</span>
                               </button>
                             </>
                           )}
@@ -3565,16 +4568,14 @@ export function SubjectLearningInterface({
 
           ))}
 
-        </div>
+          </div>
+
+          </>
+        )}
 
       </div>
 
-      {/* Question Popup */}
-      {renderQuestionPopup()}
-
-      {/* Floating Video Player - now handled by the pop-out video container above */}
-
     </div>
 
-  );
-};
+    );
+}

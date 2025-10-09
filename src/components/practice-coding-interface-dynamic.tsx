@@ -405,7 +405,7 @@ export function PracticeCodingInterfaceDynamic({
 
             {selectedLanguage === 'sql' && (
               <div className="text-xs text-gray-500 bg-yellow-50 px-2 py-1 rounded border">
-                ???? Tip: Use table name <code>sales_data</code> in queries
+                 Tip: Use table name <code>sales_data</code> in queries
               </div>
             )}
 
@@ -490,7 +490,7 @@ export function PracticeCodingInterfaceDynamic({
 
         {selectedLanguage === 'statistics' && (
           <div className="text-sm text-gray-600 bg-purple-50 px-3 py-1 rounded-lg border">
-            ???? Statistical analysis results will appear in the Results tab
+           Statistical analysis results will appear in the Results tab
           </div>
         )}
       </div>
@@ -543,7 +543,7 @@ export function PracticeCodingInterfaceDynamic({
 
                   {selectedLanguage === 'sql' && datasets.length > 0 && (
                     <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                      <h4 className="font-semibold text-blue-900 mb-2">???? SQL Schema</h4>
+                      <h4 className="font-semibold text-blue-900 mb-2"> SQL Schema</h4>
                       <div className="font-mono text-sm text-blue-800">
                         <div>Table: <code>{datasets[0].table_name || 'sales_data'}</code></div>
                         <div>Columns: {datasets[0].columns?.join(', ') || 'Loading...'}</div>
@@ -554,11 +554,11 @@ export function PracticeCodingInterfaceDynamic({
 
                   {selectedLanguage === 'statistics' && (
                     <div className="mb-6 p-4 bg-purple-50 rounded-lg border border-purple-200">
-                      <h4 className="font-semibold text-purple-900 mb-2">???? Analysis Requirements</h4>
+                      <h4 className="font-semibold text-purple-900 mb-2"> Analysis Requirements</h4>
                       <ul className="text-purple-800 text-sm space-y-1">
-                        <li>??? Perform descriptive statistics on numeric variables</li>
-                        <li>??? Conduct appropriate hypothesis tests</li>
-                        <li>??? Generate summary reports with insights</li>
+                        <li> Perform descriptive statistics on numeric variables</li>
+                        <li> Conduct appropriate hypothesis tests</li>
+                        <li> Generate summary reports with insights</li>
                       </ul>
                     </div>
                   )}
@@ -624,7 +624,7 @@ export function PracticeCodingInterfaceDynamic({
                         {selectedLanguage === 'sql' && (
                           <div className="mt-4 p-3 bg-blue-50 rounded border border-blue-200">
                             <p className="text-sm text-blue-800">
-                              ???? <strong>SQL Usage:</strong> Reference this table as <code>{dataset.table_name || dataset.name.replace('.csv', '')}</code> in your queries.
+                               <strong>SQL Usage:</strong> Reference this table as <code>{dataset.table_name || dataset.name.replace('.csv', '')}</code> in your queries.
                             </p>
                           </div>
                         )}
@@ -680,16 +680,16 @@ export function PracticeCodingInterfaceDynamic({
                     <h5 className="font-medium mb-2">Advanced Settings</h5>
                     <div className="text-sm text-gray-600">
                       {selectedLanguage === 'sql' && (
-                        <p>???? <strong>SQL:</strong> Queries are executed against the dataset tables. Use column names exactly as shown.</p>
+                        <p>💡 <strong>SQL:</strong> Queries are executed against the dataset tables. Use column names exactly as shown.</p>
                       )}
                       {selectedLanguage === 'python' && (
-                        <p>???? <strong>Python:</strong> Access datasets using pandas. Example: <code>df = pd.read_csv('dataset.csv')</code></p>
+                        <p>🐍 <strong>Python:</strong> Access datasets using pandas. Example: <code>df = pd.read_csv(&apos;dataset.csv&apos;)</code></p>
                       )}
                       {selectedLanguage === 'r' && (
-                        <p>???? <strong>R:</strong> Use built-in tidyverse functions. Example: <code>df <- read.csv('dataset.csv')</code></p>
+                        <p>📊 <strong>R:</strong> Use built-in tidyverse functions. Example: <code>df &lt;- read.csv(&apos;dataset.csv&apos;)</code></p>
                       )}
                       {selectedLanguage === 'statistics' && (
-                        <p>???? <strong>Statistics:</strong> Use scipy, numpy, and statsmodels for comprehensive statistical analysis.</p>
+                        <p>📈 <strong>Statistics:</strong> Use scipy, numpy, and statsmodels for comprehensive statistical analysis.</p>
                       )}
                     </div>
                   </div>
@@ -836,10 +836,10 @@ export function PracticeCodingInterfaceDynamic({
               <div className="p-6">
                 <div className="text-center py-12">
                   <div className="text-6xl mb-4 opacity-30">
-                    {selectedLanguage === 'sql' ? '???????' :
-                     selectedLanguage === 'python' ? '????' :
-                     selectedLanguage === 'r' ? '????' :
-                     selectedLanguage === 'statistics' ? '????' : '????'}
+                    {selectedLanguage === 'sql' ? '' :
+                     selectedLanguage === 'python' ? '' :
+                     selectedLanguage === 'r' ? '' :
+                     selectedLanguage === 'statistics' ? '' : ''}
                   </div>
                   <h3 className="text-xl font-semibold text-gray-700 mb-2">
                     {LANGUAGE_CONFIG[selectedLanguage as keyof typeof LANGUAGE_CONFIG]?.name || 'Code'} Ready

@@ -3,7 +3,7 @@ import { supabaseServer } from "@/lib/supabase-server"
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     // Handle test token for development
@@ -42,7 +42,8 @@ export async function GET(
 
     // Check if external API is available or return mock data for specific IDs
     if (!process.env.NEXT_PUBLIC_API_BASE_URL) {
-      console.warn("External API not configured, returning mock data for path:", params.id)
+      const { id } = await params;
+      console.warn("External API not configured, returning mock data for path:", id)
       
       // Return mock learning path details
       const mockPaths: Record<string, any> = {
@@ -147,7 +148,7 @@ export async function GET(
         }
       }
       
-      const mockPath = mockPaths[params.id]
+      const mockPath = mockPaths[id]
       if (mockPath) {
         return NextResponse.json(mockPath)
       } else {
@@ -156,7 +157,8 @@ export async function GET(
     }
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${params.id}`, {
+      const { id } = await params;
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${id}`, {
         headers: {
           "Authorization": `Bearer ${token}`,
         },

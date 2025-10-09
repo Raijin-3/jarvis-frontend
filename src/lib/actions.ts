@@ -14,6 +14,7 @@ export async function generateSectionExercisesAction(sectionData: {
   difficulty?: 'Beginner' | 'Intermediate' | 'Advanced';
   exerciseType?: 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry';
   questionCount?: number;
+  userId?: string;
 }) {
   return apiPost(`/v1/sections/${sectionData.sectionId}/generate-exercises`, {
     courseId: sectionData.courseId,
@@ -22,6 +23,7 @@ export async function generateSectionExercisesAction(sectionData: {
     difficulty: sectionData.difficulty,
     exerciseType: sectionData.exerciseType,
     questionCount: sectionData.questionCount,
+    userId: sectionData.userId,
   });
 }
 
@@ -90,4 +92,32 @@ export async function getNextQuestionAction(data: {
 
 export async function getAdaptiveQuizSummaryAction(sessionId: string) {
   return apiPost(`/v1/adaptive-quiz/summary`, { sessionId });
+}
+
+// Exercise Question Submission Actions
+export async function getUserSectionExercisesAction(sectionId: string) {
+  return apiGet(`/v1/sections/${sectionId}/user-exercises`);
+}
+
+export async function getExerciseProgressAction(exerciseId: string) {
+  return apiGet(`/v1/sections/exercises/${exerciseId}/progress`);
+}
+
+export async function submitQuestionAnswerAction(data: {
+  exerciseId: string;
+  questionId: string;
+  userAnswer: string;
+  timeSpent?: number;
+}) {
+  return apiPost(
+    `/v1/sections/exercises/${data.exerciseId}/questions/${data.questionId}/submit`,
+    {
+      userAnswer: data.userAnswer,
+      timeSpent: data.timeSpent,
+    }
+  );
+}
+
+export async function getQuestionDatasetAction(questionId: string) {
+  return apiGet(`/v1/sections/questions/${questionId}/dataset`);
 }

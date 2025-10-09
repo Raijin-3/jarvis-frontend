@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  transpilePackages: ['@supabase/supabase-js'],
+  transpilePackages: ['@supabase/supabase-js', '@supabase/ssr'],
   typescript: {
     // !! WARN !!
     // Dangerously allow production builds to successfully complete even if
@@ -21,6 +21,28 @@ const nextConfig: NextConfig = {
     if (dev && !isServer) {
       config.devtool = false;
     }
+    
+    // Add WebAssembly support for DuckDB-WASM and Pyodide
+    config.experiments = {
+      ...config.experiments,
+      asyncWebAssembly: true,
+      layers: true,
+    };
+    
+    // Handle .wasm files
+    config.module.rules.push({
+      test: /\.wasm$/,
+      type: 'webassembly/async',
+    });
+    
+    // Exclude WebAssembly modules from being processed by other loaders
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      fs: false,
+      path: false,
+      crypto: false,
+    };
+    
     return config;
   },
 };

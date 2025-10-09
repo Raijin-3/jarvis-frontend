@@ -199,7 +199,7 @@ export function CourseAssignmentManagementClient() {
       }
 
       const data = await response.json()
-      console.log(data.assignments);
+      // console.log(data.assignments);
       setAssignments(data.assignments)
       setTotalPages(data.totalPages)
     } catch (error: any) {

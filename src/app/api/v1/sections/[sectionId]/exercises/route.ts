@@ -3,10 +3,11 @@ import { apiGet } from '@/lib/api';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { sectionId: string } }
+  { params }: { params: Promise<{ sectionId: string }> }
 ) {
   try {
-    const data = await apiGet(`/v1/sections/${params.sectionId}/exercises`);
+    const { sectionId } = await params;
+    const data = await apiGet(`/v1/sections/${sectionId}/exercises`);
     return NextResponse.json(data);
   } catch (error) {
     console.error('Error fetching section exercises:', error);

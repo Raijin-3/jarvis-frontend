@@ -81,7 +81,7 @@ export async function POST(req: Request) {
       const data = await res.json();
       return NextResponse.json(data);
     } catch (backendError) {
-      console.log('Backend failed, trying direct Supabase:', backendError);
+      // console.log('Backend failed, trying direct Supabase:', backendError);
       // Fallback to direct Supabase
       const { data, error } = await sb
         .from('courses')

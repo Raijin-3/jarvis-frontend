@@ -73,7 +73,7 @@ export function ProfessionalCourseTabs({
     
     setLoadingQuizzes(true);
     try {
-      console.log('Generating quiz for section:', sectionId);
+      // console.log('Generating quiz for section:', sectionId);
       const response = await fetch(`/api/v1/sections/${sectionId}/generate-quiz`, {
         method: 'POST',
         headers: {
@@ -96,14 +96,14 @@ export function ProfessionalCourseTabs({
       }
       
       const result = await response.json();
-      console.log('Quiz generation response:', result);
+      // console.log('Quiz generation response:', result);
       
       // The response should contain quiz data
       const quiz = result.quiz || result;
       
       if (quiz && quiz.id) {
         // Fetch the full quiz with questions and options
-        console.log('Fetching full quiz data for quiz ID:', quiz.id);
+        // console.log('Fetching full quiz data for quiz ID:', quiz.id);
         const quizResponse = await fetch(`/api/v1/quizzes/${quiz.id}`, {
           method: 'GET',
           headers: {
@@ -113,7 +113,7 @@ export function ProfessionalCourseTabs({
         
         if (quizResponse.ok) {
           const fullQuiz = await quizResponse.json();
-          console.log('Full quiz data loaded:', fullQuiz);
+          // console.log('Full quiz data loaded:', fullQuiz);
           setQuizzes([fullQuiz]);
         } else {
           // If fetching full quiz fails, use the generated quiz data
