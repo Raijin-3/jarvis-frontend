@@ -273,10 +273,10 @@ export function ProfessionalCourseTabs({
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all border ${
                   activeTab === tab.id
-                    ? "bg-indigo-100 text-indigo-700 border border-indigo-200"
-                    : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+                    ? "bg-indigo-100 text-indigo-700 border-indigo-200"
+                    : "border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-50 hover:border-gray-200"
                 }`}
               >
                 <Icon className="h-4 w-4" />

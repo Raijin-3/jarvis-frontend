@@ -173,7 +173,7 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
             </div>
 
             {/* User Profile Section */}
-            <div className={`mb-6 transition-all duration-300`}>
+            <div className={`${open ? 'mb-6' : 'mb-3'} transition-all duration-300`}>
               <div className={`relative overflow-hidden rounded-xl border border-white/40 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 ${open ? 'p-4' : 'p-2'} backdrop-blur`}>
                 <div className={`flex items-center ${open ? 'gap-3' : 'justify-center'}`}>
                   <div className="relative">
@@ -217,8 +217,8 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
             </div>
 
             {/* Main Navigation */}
-            <nav className="space-y-1 mb-6">
-              <div className={`${open ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300 mb-3`}>
+            <nav className={`space-y-1 ${open ? 'mb-6' : 'mb-3'}`}>
+              <div className={`${open ? 'opacity-100 mb-3' : 'hidden'} transition-opacity duration-300`}>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Main</h3>
               </div>
               {mainItems.map((item) => {
@@ -227,7 +227,9 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
                   <div key={item.href} className="relative">
                     <a
                       href={item.href}
-                      className={`group relative flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-all duration-200 ${
+                      className={`group relative flex items-center rounded-xl text-sm font-medium transition-all duration-200 ${
+                        open ? 'gap-3 px-3 py-3' : 'justify-center px-2 py-3'
+                      } ${
                         isActive 
                           ? 'bg-gradient-to-r from-indigo-500/15 to-purple-500/15 text-indigo-700 shadow-lg' 
                           : 'text-gray-700 hover:bg-white/60 hover:shadow-md'
@@ -286,8 +288,8 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
             </nav>
 
             {/* Secondary Navigation */}
-            <nav className="space-y-1 mb-6">
-              <div className={`${open ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300 mb-3`}>
+            <nav className={`space-y-1 ${open ? 'mb-6' : 'mb-3'}`}>
+              <div className={`${open ? 'opacity-100 mb-3' : 'hidden'} transition-opacity duration-300`}>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Explore</h3>
               </div>
               {secondaryItems.map((item) => {
@@ -296,7 +298,9 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
                   <a
                     key={item.href}
                     href={item.href}
-                    className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                    className={`group relative flex items-center rounded-xl text-sm font-medium transition-all duration-200 ${
+                      open ? 'gap-3 px-3 py-2.5' : 'justify-center px-2 py-2.5'
+                    } ${
                       isActive 
                         ? 'bg-gradient-to-r from-indigo-500/15 to-purple-500/15 text-indigo-700 shadow-lg' 
                         : 'text-gray-700 hover:bg-white/60 hover:shadow-md'
@@ -335,7 +339,7 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
             </nav>
 
             {/* Quick Stats */}
-            <div className={`${open ? 'opacity-100' : 'opacity-0 pointer-events-none'} transition-all duration-300 mb-6`}>
+            <div className={`${open ? 'opacity-100 mb-6' : 'hidden'} transition-all duration-300`}>
               <div className="rounded-xl border border-white/40 bg-gradient-to-r from-emerald-50/50 to-green-50/50 p-3 backdrop-blur">
                 <div className="flex items-center gap-2 mb-2">
                   <Target className="h-4 w-4 text-emerald-600" />
@@ -356,7 +360,7 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
 
             {/* User Menu */}
             <nav className="space-y-1">
-              <div className={`${open ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300 mb-3`}>
+              <div className={`${open ? 'opacity-100 mb-3' : 'hidden'} transition-opacity duration-300`}>
                 <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">Account</h3>
               </div>
               {getUserMenuItems(summary.role).map((item) => {
@@ -365,7 +369,9 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
                   <a
                     key={item.href}
                     href={item.href}
-                    className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200 ${
+                    className={`group flex items-center rounded-xl text-sm font-medium transition-all duration-200 ${
+                      open ? 'gap-3 px-3 py-2.5' : 'justify-center px-2 py-2.5'
+                    } ${
                       isActive 
                         ? 'bg-gradient-to-r from-indigo-500/15 to-purple-500/15 text-indigo-700' 
                         : 'text-gray-700 hover:bg-white/60'
@@ -387,7 +393,9 @@ export function Sidebar({ active = "/dashboard", user }: SidebarProps) {
               
               {/* Logout Button */}
               <button
-                className="group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-700 transition-all duration-200 hover:bg-red-50/60 hover:text-red-700"
+                className={`group flex w-full items-center rounded-xl text-sm font-medium text-gray-700 transition-all duration-200 hover:bg-red-50/60 hover:text-red-700 ${
+                  open ? 'gap-3 px-3 py-2.5' : 'justify-center px-2 py-2.5'
+                }`}
               >
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100/80 text-gray-600 transition-all duration-200 group-hover:bg-red-100 group-hover:text-red-600">
                   <LogOut className="h-4 w-4" />

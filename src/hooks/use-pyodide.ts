@@ -167,12 +167,46 @@ for module in list(sys.modules.keys()):
     }
   }, [isReady]);
 
+  const loadDataFrame = useCallback(async (
+    varName: string,
+    data: any[]
+  ): Promise<boolean> => {
+    if (!pyodideRef.current || !isReady) {
+      console.error('Python runtime not ready');
+      return false;
+    }
+
+    try {
+      // Ensure pandas is loaded
+      await pyodideRef.current.loadPackage('pandas');
+
+      // Convert data to JSON string
+      const dataJson = JSON.stringify(data);
+
+      // Create DataFrame in Pyodide
+      await pyodideRef.current.runPythonAsync(`
+import pandas as pd
+import json
+
+# Load dataset
+${varName}_data = json.loads('''${dataJson}''')
+${varName} = pd.DataFrame(${varName}_data)
+`);
+
+      return true;
+    } catch (err) {
+      console.error(`Failed to load DataFrame ${varName}:`, err);
+      return false;
+    }
+  }, [isReady]);
+
   return {
     isReady,
     isLoading,
     error,
     executeCode,
     loadPackage,
+    loadDataFrame,
     reset,
   };
 }

@@ -26,6 +26,7 @@ import {
   CheckSquare,
   ChevronLeft,
   ChevronRight,
+  Menu,
   Circle,
   Clock,
   Code,
@@ -88,6 +89,29 @@ type Dataset = {
   data?: any[];
   description?: string;
   placeholders?: string[];
+};
+
+type DatasetPreview = {
+  columns: string[];
+  rows: unknown[][];
+};
+
+type SqlDatasetDefinition = {
+  id: string;
+  name: string;
+  description?: string;
+  placeholders?: string[];
+  creation_sql?: string;
+  table_name?: string;
+  data?: any[];
+  columns?: string[];
+  cacheKey?: string;
+};
+
+type SqlDatasetVariant = SqlDatasetDefinition & {
+  baseDatasetId: string;
+  displayName: string;
+  resolvedTableName?: string;
 };
 
 type GeneratedExerciseResponse = {
@@ -204,6 +228,66 @@ const normalizeCreationSql = (value?: string | null): string | undefined => {
   normalized = normalized.replace(/\s+```[\w+-]*\s*/gi, " ").trim();
 
   return normalized || undefined;
+};
+
+const inferTableNameFromSql = (value?: string | null): string | undefined => {
+  const normalized = normalizeCreationSql(value);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const sanitize = (sql: string) =>
+    sql
+      .replace(/--.*$/gm, " ")
+      .replace(/\/\*[\s\S]*?\*\//g, " ");
+
+  const extractTableName = (statement: string): string | undefined => {
+    const patterns = [
+      /create\s+(?:or\s+replace\s+)?table\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
+      /create\s+(?:or\s+replace\s+)?view\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
+      /insert\s+into\s+(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = statement.match(pattern);
+      if (match) {
+        return (match[2] ?? match[3] ?? match[4])?.trim();
+      }
+    }
+
+    return undefined;
+  };
+
+  const statements = sanitize(normalized)
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  for (const statement of statements) {
+    const tableName = extractTableName(statement);
+    if (tableName) {
+      return tableName;
+    }
+  }
+
+  return undefined;
+};
+
+const deriveDatasetKey = (dataset: {
+  id?: string | null;
+  table_name?: string | null;
+  creation_sql?: string | null | undefined;
+}) => {
+  if (dataset.id && typeof dataset.id === "string") {
+    return `id:${dataset.id}`;
+  }
+  if (dataset.table_name && typeof dataset.table_name === "string") {
+    return `table:${dataset.table_name}`;
+  }
+  if (dataset.creation_sql && typeof dataset.creation_sql === "string") {
+    return `sql:${dataset.creation_sql}`;
+  }
+  return undefined;
 };
 
 const normalizeSectionExerciseQuestion = (
@@ -677,6 +761,7 @@ export function SubjectLearningInterface({
   const [isPreparingDuckDb, setIsPreparingDuckDb] = useState(false);
   const [duckDbSetupError, setDuckDbSetupError] = useState<string | null>(null);
   const [duckDbTables, setDuckDbTables] = useState<string[]>([]);
+  const [duckDbDatasetTables, setDuckDbDatasetTables] = useState<Record<string, string[]>>({});
 
   // Dataset state
   const [exerciseDatasets, setExerciseDatasets] = useState<{ [exerciseId: string]: any[] }>({});
@@ -684,6 +769,46 @@ export function SubjectLearningInterface({
   const [questionDataset, setQuestionDataset] = useState<any>(null);
   const [loadingDataset, setLoadingDataset] = useState(false);
   const [questionCompletionStatus, setQuestionCompletionStatus] = useState<Record<string, "pending" | "completed">>({});
+  const [activeDatasetId, setActiveDatasetId] = useState<string | null>(null);
+  const [datasetPreview, setDatasetPreview] = useState<DatasetPreview | null>(null);
+  const [loadingDatasetPreview, setLoadingDatasetPreview] = useState(false);
+  const [datasetPreviewError, setDatasetPreviewError] = useState<string | null>(null);
+  const [isContentExpanded, setIsContentExpanded] = useState(false);
+  const toggleContentExpanded = useCallback(() => {
+    setIsContentExpanded((prev) => !prev);
+  }, []);
+  const closeNavigation = useCallback(() => {
+    setIsContentExpanded(true);
+  }, []);
+
+  const renderContentExpansionToggle = useCallback(
+    (variant: "light" | "dark" = "light") => (
+      <button
+        type="button"
+        onClick={toggleContentExpanded}
+        className={`group inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+          variant === "dark"
+            ? "border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white"
+            : "border-slate-200 bg-slate-100 text-slate-600 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+        }`}
+        aria-label={isContentExpanded ? "Show course navigation" : "Hide course navigation"}
+      >
+        {isContentExpanded ? (
+          <ChevronLeft className={`h-4 w-4 ${variant === "dark" ? "text-white" : "text-slate-500"}`} />
+        ) : (
+          <ChevronRight className={`h-4 w-4 ${variant === "dark" ? "text-white" : "text-slate-500"}`} />
+        )}
+        <span
+          className={`ml-2 hidden sm:inline ${
+            variant === "dark" ? "text-white/80" : "text-slate-600"
+          }`}
+        >
+          {isContentExpanded ? "Show Outline" : "Hide Outline"}
+        </span>
+      </button>
+    ),
+    [isContentExpanded, toggleContentExpanded],
+  );
 
   // Adaptive Quiz state
   const [isAdaptiveQuizMode, setIsAdaptiveQuizMode] = useState(false);
@@ -1291,6 +1416,37 @@ export function SubjectLearningInterface({
     setPracticeQuestions([]);
     setPracticeDatasets([]);
   }, []);
+
+  const handleExitEmbeddedExercise = useCallback(() => {
+    setSelectedQuestionForPopup(null);
+    setShowQuestionPopup(false);
+    setSqlCode('');
+    setSqlResults([]);
+    setSqlError('');
+    setSelectedResource((prev) => {
+      if (!selectedSection) {
+        if (prev && prev.kind === "exercise") {
+          return null;
+        }
+        return prev;
+      }
+
+      if (!prev || prev.kind !== "exercise" || prev.sectionId !== selectedSection.id) {
+        return prev;
+      }
+
+      const fallback = getDefaultResource(selectedSection);
+      if (!fallback) {
+        return null;
+      }
+
+      if (fallback.kind === "exercise" && fallback.resourceId === prev.resourceId) {
+        return null;
+      }
+
+      return fallback;
+    });
+  }, [selectedSection]);
 
   const handlePracticeSubmit = useCallback(async (questionId: string, solution: string) => {
     try {
@@ -2055,28 +2211,26 @@ export function SubjectLearningInterface({
       return [];
     }
 
-    type SqlDataset = {
-      id: string;
-      name: string;
-      description?: string;
-      placeholders?: string[];
-      creation_sql?: string;
-      table_name?: string;
-      data?: any[];
-      columns?: string[];
-    };
-
-    const datasets: SqlDataset[] = [];
+    const datasets: SqlDatasetDefinition[] = [];
     const seen = new Set<string>();
 
-    const pushDataset = (dataset: SqlDataset) => {
+    const pushDataset = (dataset: SqlDatasetDefinition) => {
       if (!dataset) return;
       const normalizedCreationSql = normalizeCreationSql(dataset.creation_sql);
-      const normalizedDataset: SqlDataset = {
+      const inferredTableName = dataset.table_name ?? inferTableNameFromSql(normalizedCreationSql);
+      const datasetKey = deriveDatasetKey({
+        id: dataset.id,
+        table_name: inferredTableName,
+        creation_sql: normalizedCreationSql,
+      });
+      const normalizedDataset: SqlDatasetDefinition = {
         ...dataset,
         creation_sql: normalizedCreationSql,
+        table_name: inferredTableName ?? dataset.table_name,
+        cacheKey: datasetKey,
       };
       const key =
+        datasetKey ||
         normalizedCreationSql?.trim() ||
         (normalizedDataset.table_name
           ? `${normalizedDataset.table_name}:${Array.isArray(normalizedDataset.data) ? normalizedDataset.data.length : 0}`
@@ -2185,6 +2339,228 @@ export function SubjectLearningInterface({
     exerciseDatasetList,
   ]);
 
+  const sqlDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
+    if (selectedQuestionType !== "sql") {
+      return [];
+    }
+
+    return availableSqlDatasets.flatMap((dataset) => {
+      const datasetKey =
+        dataset.cacheKey ??
+        deriveDatasetKey({
+          id: dataset.id,
+          table_name: dataset.table_name,
+          creation_sql: dataset.creation_sql,
+        });
+
+      const mappedTables = datasetKey ? duckDbDatasetTables[datasetKey] : undefined;
+      const fallbackTables =
+        typeof dataset.table_name === "string" && dataset.table_name.trim().length > 0
+          ? [dataset.table_name]
+          : [];
+
+      const candidateTables = Array.from(
+        new Set(
+          (mappedTables?.length ? mappedTables : fallbackTables).filter(
+            (value): value is string => typeof value === "string" && value.trim().length > 0,
+          ),
+        ),
+      );
+
+      if (candidateTables.length === 0) {
+        const displayName = dataset.name || dataset.table_name || "Dataset";
+        return [
+          {
+            ...dataset,
+            id: dataset.id,
+            baseDatasetId: dataset.id,
+            displayName,
+            resolvedTableName: dataset.table_name,
+          },
+        ];
+      }
+
+      const baseName = dataset.name || dataset.table_name || "Dataset";
+      const hasMultipleTables = candidateTables.length > 1;
+
+      return candidateTables.map<SqlDatasetVariant>((tableName) => ({
+        ...dataset,
+        id: `${dataset.id}::${tableName}`,
+        baseDatasetId: dataset.id,
+        displayName: hasMultipleTables ? tableName : baseName,
+        resolvedTableName: tableName,
+      }));
+    });
+  }, [availableSqlDatasets, duckDbDatasetTables, selectedQuestionType]);
+
+  useEffect(() => {
+    if (selectedQuestionType !== "sql" || sqlDatasetVariants.length === 0) {
+      setActiveDatasetId(null);
+      setDatasetPreview(null);
+      setDatasetPreviewError(null);
+      return;
+    }
+
+    setActiveDatasetId((prev) => {
+      if (prev && sqlDatasetVariants.some((dataset) => dataset.id === prev)) {
+        return prev;
+      }
+      return sqlDatasetVariants[0]?.id ?? null;
+    });
+  }, [sqlDatasetVariants, selectedQuestionType, selectedQuestionForPopup?.id]);
+
+  const loadDatasetPreview = useCallback(
+    async (datasetId: string | null) => {
+      if (selectedQuestionType !== "sql") {
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        return;
+      }
+
+      if (!datasetId) {
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        return;
+      }
+
+      const targetDataset = sqlDatasetVariants.find((dataset) => dataset.id === datasetId);
+      if (!targetDataset) {
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        return;
+      }
+
+      const baseDataset =
+        availableSqlDatasets.find((dataset) => dataset.id === targetDataset.baseDatasetId) ??
+        targetDataset;
+
+      setLoadingDatasetPreview(true);
+      setDatasetPreviewError(null);
+
+      const normalizeRowValues = (row: unknown, columns: string[]): unknown[] => {
+        if (Array.isArray(row)) {
+          return columns.map((_, index) => row[index] ?? null);
+        }
+        if (row && typeof row === "object") {
+          return columns.map((columnName) => {
+            const typedRow = row as Record<string, unknown>;
+            if (columnName in typedRow) {
+              return typedRow[columnName];
+            }
+            return null;
+          });
+        }
+        return columns.map(() => row ?? null);
+      };
+
+      try {
+        const datasetKey =
+          targetDataset.cacheKey ??
+          baseDataset.cacheKey ??
+          deriveDatasetKey({
+            id: targetDataset.baseDatasetId ?? baseDataset.id,
+            table_name: targetDataset.resolvedTableName ?? baseDataset.table_name,
+            creation_sql: baseDataset.creation_sql,
+          });
+
+        const mappedTables = datasetKey ? duckDbDatasetTables[datasetKey] : undefined;
+        const preferredTableNames = Array.from(
+          new Set(
+            [
+              targetDataset.resolvedTableName,
+              ...(Array.isArray(mappedTables) ? mappedTables : []),
+              baseDataset.table_name,
+            ].filter(
+              (value): value is string => typeof value === "string" && value.trim().length > 0,
+            ),
+          ),
+        );
+        const mappedTableName = preferredTableNames.find((tableName) =>
+          duckDbTables.includes(tableName),
+        );
+
+        if (
+          mappedTableName &&
+          duckDbTables.includes(mappedTableName) &&
+          isDuckDbReady &&
+          !isDuckDbLoading &&
+          !isPreparingDuckDb
+        ) {
+          const escapeIdentifier = (value: string) => value.replace(/"/g, '""');
+          const previewQuery = `SELECT * FROM "${escapeIdentifier(String(mappedTableName))}" LIMIT 20;`;
+          const result = await executeDuckDbQuery(previewQuery);
+          if (result.success && result.result) {
+            setDatasetPreview({
+              columns: result.result.columns ?? [],
+              rows: (result.result.rows ?? []).map((row) => Array.isArray(row) ? row : [row]),
+            });
+            setLoadingDatasetPreview(false);
+            return;
+          }
+        }
+
+        const fallbackData = Array.isArray(targetDataset.data)
+          ? targetDataset.data
+          : Array.isArray(baseDataset.data)
+          ? baseDataset.data
+          : [];
+
+        if (fallbackData.length > 0) {
+          let columns = Array.isArray(targetDataset.columns)
+            ? targetDataset.columns
+            : Array.isArray(baseDataset.columns)
+            ? baseDataset.columns
+            : [];
+          if (!columns.length) {
+            const firstRow = fallbackData[0];
+            if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
+              columns = Object.keys(firstRow);
+            }
+          }
+
+          if (!columns.length && Array.isArray(fallbackData[0])) {
+            columns = (fallbackData[0] as unknown[]).map((_, index) => `column_${index + 1}`);
+          }
+
+          if (columns.length) {
+            setDatasetPreview({
+              columns,
+              rows: fallbackData.slice(0, 20).map((row) => normalizeRowValues(row, columns)),
+            });
+            setLoadingDatasetPreview(false);
+            return;
+          }
+        }
+
+        setDatasetPreview(null);
+        setDatasetPreviewError("Preview data is not available for this dataset yet.");
+      } catch (error) {
+        console.error("Failed to load dataset preview:", error);
+        setDatasetPreview(null);
+        setDatasetPreviewError(
+          error instanceof Error ? error.message : "Unable to load dataset preview.",
+        );
+      } finally {
+        setLoadingDatasetPreview(false);
+      }
+    },
+    [
+      availableSqlDatasets,
+      sqlDatasetVariants,
+      duckDbDatasetTables,
+      duckDbTables,
+      executeDuckDbQuery,
+      isDuckDbLoading,
+      isDuckDbReady,
+      isPreparingDuckDb,
+      selectedQuestionType,
+    ],
+  );
+
+  useEffect(() => {
+    loadDatasetPreview(activeDatasetId);
+  }, [activeDatasetId, loadDatasetPreview]);
+
   const datasetLoadSignature = useMemo(
     () =>
       JSON.stringify(
@@ -2212,6 +2588,7 @@ export function SubjectLearningInterface({
       setDuckDbTables([]);
       setDuckDbSetupError(null);
       setIsPreparingDuckDb(false);
+      setDuckDbDatasetTables({});
       return;
     }
 
@@ -2264,15 +2641,34 @@ export function SubjectLearningInterface({
 
     const escapeIdentifier = (value: string) => value.replace(/"/g, '""');
 
-    const resetDatabase = async () => {
+    const fetchCurrentTables = async (): Promise<string[]> => {
       const result = await executeDuckDbQuery("SHOW TABLES;");
       if (!result.success || !result.result) {
-        return;
+        return [];
       }
 
-      for (const row of result.result.rows) {
-        const tableName = row?.[0];
-        if (!tableName) continue;
+      return result.result.rows
+        .map((row) => {
+          if (Array.isArray(row)) {
+            const firstValue = row.find((value) => typeof value === "string");
+            return firstValue ? String(firstValue) : undefined;
+          }
+          if (typeof row === "string") {
+            return row;
+          }
+          if (row && typeof row === "object") {
+            const values = Object.values(row as Record<string, unknown>);
+            const firstValue = values.find((value) => typeof value === "string");
+            return firstValue ? String(firstValue) : undefined;
+          }
+          return undefined;
+        })
+        .filter((value): value is string => Boolean(value));
+    };
+
+    const resetDatabase = async () => {
+      const tables = await fetchCurrentTables();
+      for (const tableName of tables) {
         await executeDuckDbQuery(`DROP TABLE IF EXISTS "${escapeIdentifier(String(tableName))}"`);
       }
     };
@@ -2314,16 +2710,29 @@ export function SubjectLearningInterface({
       setDuckDbSetupError(null);
       setSqlResults([]);
       setSqlError('');
+      setDuckDbDatasetTables({});
 
       try {
         await resetDatabase();
+
+        let currentTables = await fetchCurrentTables();
+        const datasetTableMap: Record<string, string[]> = {};
 
         for (const dataset of availableSqlDatasets) {
           if (cancelled) {
             return;
           }
 
+          const beforeTables = new Set(currentTables);
           const creationSql = normalizeCreationSql(dataset.creation_sql);
+          const datasetKey =
+            dataset.cacheKey ??
+            deriveDatasetKey({
+              id: dataset.id,
+              table_name: dataset.table_name,
+              creation_sql: creationSql,
+            });
+
           if (creationSql) {
             await executeSqlBlock(creationSql);
           } else if (
@@ -2336,18 +2745,26 @@ export function SubjectLearningInterface({
               throw new Error(`Failed to load dataset ${dataset.table_name}`);
             }
           }
+
+          currentTables = await fetchCurrentTables();
+          if (datasetKey) {
+            const newTables = currentTables.filter((table) => !beforeTables.has(table));
+            const fallbackTables =
+              newTables.length > 0
+                ? newTables
+                : dataset.table_name && currentTables.includes(dataset.table_name)
+                ? [dataset.table_name]
+                : [];
+
+            if (fallbackTables.length > 0) {
+              datasetTableMap[datasetKey] = Array.from(new Set(fallbackTables));
+            }
+          }
         }
 
-        const tablesResult = await executeDuckDbQuery("SHOW TABLES;");
         if (!cancelled) {
-          if (tablesResult.success && tablesResult.result) {
-            const tables = tablesResult.result.rows
-              .map((row) => row?.[0])
-              .filter((value): value is string => Boolean(value));
-            setDuckDbTables(tables);
-          } else {
-            setDuckDbTables([]);
-          }
+          setDuckDbDatasetTables(datasetTableMap);
+          setDuckDbTables(currentTables);
         }
 
         console.log("[DuckDB] Datasets ready.");
@@ -2892,6 +3309,9 @@ export function SubjectLearningInterface({
         <div className="overflow-hidden rounded-3xl border border-white/70 bg-white shadow-xl">
 
           <div className="relative bg-slate-950 text-white">
+            <div className="pointer-events-auto absolute right-4 top-4 z-30">
+              {renderContentExpansionToggle("dark")}
+            </div>
 
             <div 
               ref={videoContainerRef} 
@@ -2978,11 +3398,11 @@ export function SubjectLearningInterface({
 
                 <div className="hidden rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white/80 backdrop-blur lg:flex">
 
-                  <span>{lectureMeta}</span>
+                  {/* <span>{lectureMeta}</span> */}
 
                   <span className="mx-2 text-white/40">|</span>
 
-                  <span>{lessonMeta}</span>
+                  {/* <span>{lessonMeta}</span> */}
 
                 </div>
 
@@ -3103,13 +3523,16 @@ export function SubjectLearningInterface({
       <div className="overflow-hidden rounded-3xl border border-white/70 bg-white shadow-xl">
 
         <div className="border-b border-slate-100 bg-gradient-to-r from-slate-100 via-white to-white px-6 py-4">
-
-          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Learning Material</p>
-
-          <h2 className="mt-2 text-lg font-semibold text-slate-900">{selectedSection.title}</h2>
-
-          <p className="mt-1 text-sm text-slate-600">{lessonMeta}</p>
-
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Learning Material</p>
+              <h2 className="mt-2 text-lg font-semibold text-slate-900">{selectedSection.title}</h2>
+              <p className="mt-1 text-sm text-slate-600">{lessonMeta}</p>
+            </div>
+            <div className="flex items-center justify-end">
+              {renderContentExpansionToggle("light")}
+            </div>
+          </div>
         </div>
 
         <div className="bg-slate-50 px-6 py-6">
@@ -3255,12 +3678,19 @@ export function SubjectLearningInterface({
     return (
       <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden">
         <div className="p-6">
-          <h2 className="text-lg font-semibold text-gray-900">
-            {selectedSection?.title} - {activeQuiz.title || resourceLabels.quiz}
-          </h2>
-          <p className="mt-1 text-sm text-gray-600">
-            Question {currentQuizQuestionIndex + 1} of {totalQuestions}
-          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                {selectedSection?.title} - {activeQuiz.title || resourceLabels.quiz}
+              </h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Question {currentQuizQuestionIndex + 1} of {totalQuestions}
+              </p>
+            </div>
+            <div className="flex items-center justify-end">
+              {renderContentExpansionToggle("light")}
+            </div>
+          </div>
           <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
             <div
               className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
@@ -3525,14 +3955,15 @@ export function SubjectLearningInterface({
               disabled={!adaptiveQuizAnswer || submittingAdaptiveAnswer || showAdaptiveExplanation}
               className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {submittingAdaptiveAnswer ? (
+              {/* {submittingAdaptiveAnswer ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                   <span>Submitting...</span>
                 </>
               ) : (
                 <span>Submit</span>
-              )}
+              )} */}
+              <span>Submit</span>
             </button>
             <button
               onClick={handleAdaptiveQuizNext}
@@ -3543,7 +3974,15 @@ export function SubjectLearningInterface({
               }
               className="px-6 py-2.5 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>Next</span>
+              {submittingAdaptiveAnswer ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                  <span></span>
+                </>
+              ) : (
+                <span>Next</span>
+              )}
+              {/* <span>Next</span> */}
             </button>
           </div>
         </div>
@@ -3646,8 +4085,29 @@ export function SubjectLearningInterface({
     };
 
     const config = languageConfig[questionType] || languageConfig.sql;
+    const availableDatasets = questionType === "sql" ? sqlDatasetVariants : [];
+    const activeDataset =
+      questionType === "sql" && activeDatasetId
+        ? availableDatasets.find((dataset) => dataset.id === activeDatasetId) ?? null
+        : null;
 
-    const availableDatasets = questionType === "sql" ? availableSqlDatasets : [];
+    const formatCellValue = (value: unknown) => {
+      if (value === null || value === undefined) {
+        return "NULL";
+      }
+      if (typeof value === "object") {
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      }
+      return String(value);
+    };
+
+    const containerClass = isEmbedded
+      ? "flex flex-col rounded-2xl border border-white/60 bg-white/90 backdrop-blur-xl shadow-lg overflow-hidden"
+      : "bg-white rounded-3xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col";
 
     const headerTitle =
       question.exerciseTitle || activeExercise?.title || selectedSection?.title || "Exercise";
@@ -3658,29 +4118,35 @@ export function SubjectLearningInterface({
         ? `${headerSubtitle.slice(0, 157)}...`
         : headerSubtitle;
 
-    const containerClass = isEmbedded
-      ? "flex flex-col rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden min-h-[520px]"
-      : "bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col";
-
     const header = (
-      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">
+      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
             {isEmbedded ? "Practice Exercise" : "Practice Question"}
           </p>
-          <h2 className="mt-2 text-lg font-semibold text-gray-900 truncate">{headerTitle}</h2>
+          <h2 className="mt-2 truncate text-xl font-semibold text-slate-900">{headerTitle}</h2>
           {trimmedSubtitle && (
-            <p className="mt-1 text-sm text-gray-600">{trimmedSubtitle}</p>
+            <p className="mt-1 text-sm text-slate-500">{trimmedSubtitle}</p>
           )}
         </div>
         <div className="flex items-center gap-2">
+          {renderContentExpansionToggle("light")}
+          {isEmbedded && (
+            <button
+              onClick={handleExitEmbeddedExercise}
+              className="flex items-center gap-2 rounded-lg border border-transparent px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Exit
+            </button>
+          )}
           <span
-            className={`px-2 py-1 text-xs font-medium rounded-full ${
+            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
               questionType === "sql"
-                ? "bg-blue-100 text-blue-800"
+                ? "bg-blue-100 text-blue-700"
                 : questionType === "python"
                 ? "bg-yellow-100 text-yellow-800"
-                : "bg-gray-100 text-gray-800"
+                : "bg-slate-100 text-slate-600"
             }`}
           >
             {config.name}
@@ -3691,9 +4157,9 @@ export function SubjectLearningInterface({
                 setShowQuestionPopup(false);
                 setSelectedQuestionForPopup(null);
               }}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
             >
-              <Circle className="h-6 w-6 text-gray-400 hover:text-gray-600" />
+              <Circle className="h-6 w-6" />
             </button>
           )}
         </div>
@@ -3702,7 +4168,7 @@ export function SubjectLearningInterface({
 
     const questionTabsBar =
       questionList.length > 0 ? (
-        <div className="px-6 py-3 border-b border-gray-200 bg-gray-50">
+        <div className="border-b border-slate-200 bg-slate-50 px-6 py-3">
           <div className="flex flex-wrap gap-2">
             {questionList.map((questionItem: any, index: number) => {
               const key = getExerciseQuestionKey(questionItem, index);
@@ -3713,16 +4179,16 @@ export function SubjectLearningInterface({
                 <button
                   key={key}
                   onClick={() => handleSelectExerciseQuestionTab(index)}
-                  className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-full border transition ${
+                  className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
                     isActive
-                      ? "bg-indigo-600 text-white border-indigo-600"
-                      : "bg-white text-gray-700 border-gray-200 hover:border-indigo-200 hover:text-indigo-600"
+                      ? "border-indigo-600 bg-indigo-600 text-white shadow"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-600"
                   }`}
                 >
                   {status ? (
                     <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
                   ) : (
-                    <Circle className="h-3.5 w-3.5 text-gray-300" />
+                    <Circle className="h-3.5 w-3.5 text-slate-300" />
                   )}
                   <span>Question {index + 1}</span>
                 </button>
@@ -3733,226 +4199,322 @@ export function SubjectLearningInterface({
       ) : null;
 
     const content = (
-      <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
-        <div className="flex flex-col min-h-0">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-medium text-gray-900">Question</h3>
+      <div className="grid min-h-[520px] flex-1 grid-cols-1 overflow-hidden md:grid-cols">
+        <div className="flex min-h-0 flex-col bg-slate-50">
+          <div className="border-b border-slate-200 bg-white px-6 py-5 shadow-sm">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Question</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                  {question.text || question.question_text}
+                </p>
+              </div>
               {questionDifficulty && (
                 <span
-                  className={`px-2 py-1 text-xs font-medium rounded-full ${
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${
                     questionDifficulty === "Beginner"
-                      ? "bg-green-100 text-green-700"
+                      ? "bg-emerald-100 text-emerald-700"
                       : questionDifficulty === "Intermediate"
-                      ? "bg-yellow-100 text-yellow-700"
-                      : "bg-red-100 text-red-700"
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-rose-100 text-rose-700"
                   }`}
                 >
                   {questionDifficulty}
                 </span>
               )}
             </div>
-            <p className="text-gray-700 leading-relaxed">{question.text || question.question_text}</p>
             {questionHint && (
-              <p className="mt-3 text-sm text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
-                Hint: {questionHint}
-              </p>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
+                <span className="font-medium">Hint:</span> {questionHint}
+              </div>
             )}
           </div>
-          <div className="flex-1 flex flex-col min-h-0">
-            <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-              {config.name} Editor
-            </div>
-            <textarea
-              value={sqlCode}
-              onChange={(e) => setSqlCode(e.target.value)}
-              className={`flex-1 font-mono text-sm p-4 outline-none resize-none border-x ${
-                questionType === "sql"
-                  ? "bg-[#0f172a] text-green-400"
-                  : "bg-white text-gray-900 border-gray-200"
-              }`}
-              placeholder={config.starterCode}
-              spellCheck={false}
-            />
-            <div className="border-t border-gray-200 p-3 flex gap-2 justify-between bg-gray-50">
-              <div className="flex items-center gap-2">
-                {isExecutingSql && (
-                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleExecuteSQL(sqlCode)}
-                  disabled={
-                    isExecutingSql ||
-                    !sqlCode.trim() ||
-                    !isDuckDbReady ||
-                    isPreparingDuckDb
-                  }
-                  className="rounded-md border border-blue-500 bg-blue-600 text-white px-4 py-1.5 text-xs hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Run Code
-                </button>
-                <button
-                  onClick={() => markQuestionCompleted(question)}
-                  className="rounded-md bg-indigo-600 border border-indigo-600 px-4 py-1.5 text-xs text-white hover:bg-indigo-700"
-                >
-                  Submit Solution
-                </button>
-                <button
-                  onClick={() => handleNavigateExerciseQuestion(1)}
-                  disabled={!hasNextQuestion || isPreparingDuckDb || isDuckDbLoading}
-                  className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-md bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next Question
-                  <ChevronRight className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="flex flex-col min-h-0 border-l border-gray-200">
-          <div className="flex-1 min-h-0 flex flex-col">
-            <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-              Output
-            </div>
-            <div className="flex-1 overflow-auto p-4 bg-gray-900 text-green-400 font-mono text-sm">
-              {duckDbError && (
-                <div className="text-red-300 bg-red-900/40 border border-red-800 px-3 py-2 rounded mb-3">
-                  {duckDbError}
+          <div className="flex-1 overflow-auto px-6 py-5">
+            {questionType === "sql" ? (
+              <div className="flex min-h-full flex-col gap-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+                    Dataset Preview
+                  </h4>
+                  {availableDatasets.length > 1 && (
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {availableDatasets.map((dataset) => {
+                        const isActive = dataset.id === activeDatasetId;
+                        const label = dataset.displayName || dataset.name || dataset.table_name || "Dataset";
+                        return (
+                          <button
+                            key={dataset.id}
+                            onClick={() => setActiveDatasetId(dataset.id)}
+                            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                              isActive
+                                ? "bg-indigo-600 text-white shadow-sm"
+                                : "bg-white text-slate-600 ring-1 ring-slate-200 hover:text-indigo-600"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-              {duckDbSetupError && (
-                <div className="text-red-300 bg-red-900/30 border border-red-800 px-3 py-2 rounded mb-3">
-                  {duckDbSetupError}
-                </div>
-              )}
-              {(isDuckDbLoading || isPreparingDuckDb) && (
-                <div className="flex items-center gap-2 text-xs text-blue-200 mb-3">
-                  <div className="w-4 h-4 border-2 border-blue-300 border-t-transparent rounded-full animate-spin" />
-                  <span>{isDuckDbLoading ? "Initializing SQL engine..." : "Loading datasets into DuckDB..."}</span>
-                </div>
-              )}
-              {!isDuckDbLoading && !isPreparingDuckDb && duckDbTables.length > 0 && (
-                <div className="text-xs text-green-300 mb-3">
-                  Tables ready:{" "}
-                  {duckDbTables.slice(0, 5).join(", ")}
-                  {duckDbTables.length > 5 ? `, +${duckDbTables.length - 5} more` : ""}
-                </div>
-              )}
-              {sqlError && (
-                <div className="text-red-400 bg-red-900/20 p-3 rounded-lg mb-4">{sqlError}</div>
-              )}
-              {sqlResults.map((result, index) => (
-                <div key={index} className="mb-6">
-                  {result.columns.length > 0 && result.values.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b border-green-500">
-                            {result.columns.map((col: string) => (
-                              <th key={col} className="px-2 py-1 text-left text-green-200 font-semibold">
-                                {col}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {result.values.slice(0, 10).map((row: any[], rowIndex: number) => (
-                            <tr key={rowIndex} className="border-b border-green-800">
-                              {row.map((cell: any, cellIndex: number) => (
-                                <td key={cellIndex} className="px-2 py-1 text-green-300">
-                                  {cell ?? "NULL"}
-                                </td>
+                <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-semibold text-slate-800">
+                        {activeDataset?.displayName ||
+                          activeDataset?.name ||
+                          activeDataset?.table_name ||
+                          "Dataset"}
+                      </span>
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+                        {(activeDataset?.resolvedTableName ?? activeDataset?.table_name) && (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                            Table: {activeDataset.resolvedTableName ?? activeDataset.table_name}
+                          </span>
+                        )}
+                        {activeDataset?.columns?.length ? (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                            Columns: {activeDataset.columns.slice(0, 6).join(", ")}
+                            {activeDataset.columns.length > 6
+                              ? ` +${activeDataset.columns.length - 6}`
+                              : ""}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {loadingDatasetPreview && (
+                      <div className="flex items-center gap-2 text-xs text-indigo-600">
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
+                        <span>Preparing preview...</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    {datasetPreview ? (
+                      <div className="max-h-[320px] px-5 py-4 overflow-x-auto overflow-y-auto">
+                        <table className="min-w-full border-collapse text-xs text-slate-700">
+                          <thead className="sticky top-0 bg-slate-100">
+                            <tr>
+                              {datasetPreview.columns.map((column) => (
+                                <th
+                                  key={column}
+                                  className="border border-slate-200 px-3 py-2 text-left font-semibold"
+                                >
+                                  {column}
+                                </th>
                               ))}
                             </tr>
-                          ))}
-                          {result.values.length > 10 && (
-                            <tr>
-                              <td
-                                colSpan={result.columns.length}
-                                className="px-2 py-1 text-center text-green-500 text-xs italic"
+                          </thead>
+                          <tbody>
+                            {datasetPreview.rows.map((row, rowIndex) => (
+                              <tr
+                                key={rowIndex}
+                                className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50"}
                               >
-                                ... {result.values.length - 10} more rows ...
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
+                                {row.map((cell, cellIndex) => (
+                                  <td
+                                    key={`${rowIndex}-${cellIndex}`}
+                                    className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-600"
+                                  >
+                                    <span className="block max-w-[140px] truncate" title={formatCellValue(cell)}>
+                                      {formatCellValue(cell)}
+                                    </span>
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="flex h-full items-center justify-center px-5 py-10 text-center">
+                        <p className="text-sm text-slate-500">
+                          {datasetPreviewError
+                            ? datasetPreviewError
+                            : loadingDatasetPreview
+                            ? "Preparing dataset preview..."
+                            : availableDatasets.length === 0
+                            ? "No datasets available for this question."
+                            : "Preview not available. Try running the dataset creation SQL from the editor."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  {activeDataset?.creation_sql && (
+                    <div className="border-t border-slate-200 bg-slate-50 px-5 py-3">
+                      <button
+                        onClick={() => setSqlCode(activeDataset.creation_sql)}
+                        className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                      >
+                        Load creation SQL into editor
+                      </button>
                     </div>
-                  )}
-                  {result.columns.length === 0 && result.values.length === 0 && (
-                    <div className="text-green-400 text-sm">Query executed successfully (no results to display)</div>
                   )}
                 </div>
-              ))}
-              {sqlResults.length === 0 && !sqlError && sqlCode.trim() && (
-                <div className="text-gray-400 italic">Run your code to see results here...</div>
+              </div>
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white text-center shadow-sm">
+                <p className="px-6 text-sm text-slate-500">
+                  No dataset preview for {config.name} questions. Focus on the prompt on the right to craft your solution.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-col bg-white">
+          <div className="border-b border-slate-200 px-6 py-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">{config.name} Workspace</h3>
+                <p className="text-sm text-slate-500">
+                  Craft your solution and run it against the dataset. Output appears below.
+                </p>
+              </div>
+              {isExecutingSql && (
+                <div className="flex items-center gap-2 text-xs text-indigo-600">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
+                  <span>Running...</span>
+                </div>
               )}
             </div>
-          </div>
-          {questionType === "sql" && (
-            <div className="border-t border-gray-200">
-              <div className="px-4 py-2 border-b border-gray-200 text-xs uppercase tracking-wide text-gray-600 bg-gray-50">
-                Available Datasets
-              </div>
-              <div className="p-4 space-y-4 max-h-80 overflow-y-auto">
-                {(isDuckDbLoading || isPreparingDuckDb) && (
-                  <div className="flex items-center gap-2 text-xs text-blue-600">
-                    <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                    <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Preparing datasets..."}</span>
-                  </div>
-                )}
-                {!isDuckDbLoading && !isPreparingDuckDb && duckDbTables.length > 0 && (
-                  <div className="text-xs text-green-600">
-                    Tables ready in DuckDB: {duckDbTables.slice(0, 5).join(", ")}
-                    {duckDbTables.length > 5 ? `, +${duckDbTables.length - 5} more` : ""}
-                  </div>
-                )}
-                {availableDatasets.length > 0 ? (
-                  availableDatasets.map((dataset: any) => (
-                    <div key={dataset.id} className="bg-gray-50 border border-gray-200 rounded-lg overflow-hidden">
-                      <div className="px-4 py-3 bg-gray-100 border-b border-gray-200">
-                        <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">
-                          {dataset.name}
-                        </h4>
-                        {dataset.description && (
-                          <p className="text-xs text-gray-600 mt-1">{dataset.description}</p>
-                        )}
-                      </div>
-                      <div className="p-3 space-y-3">
-                        <div className="text-xs text-gray-600">
-                          💡 Available columns:{" "}
-                          {Array.isArray(dataset.placeholders) && dataset.placeholders.length
-                            ? dataset.placeholders.slice(0, 5).join(", ")
-                            : dataset.table_name || "No columns specified"}
-                        </div>
-                        {dataset.creation_sql && (
-                          <div>
-                            <div className="text-xs text-gray-500 mb-2">Dataset Creation SQL:</div>
-                            <div className="bg-gray-800 text-green-400 p-2 rounded text-xs font-mono max-h-32 overflow-y-auto">
-                              {dataset.creation_sql}
-                            </div>
-                            <button
-                              onClick={() => setSqlCode(dataset.creation_sql)}
-                              className="mt-2 px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 transition-colors"
-                            >
-                              Load Dataset SQL
-                            </button>
-                          </div>
-                        )}
-                        {loadingDataset && (
-                          <div className="text-xs text-blue-600">Loading dataset information...</div>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-xs text-gray-500">No dataset information available.</div>
-                )}
+            <div className="mt-4 flex min-h-[280px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
+              <textarea
+                value={sqlCode}
+                onChange={(e) => setSqlCode(e.target.value)}
+                className={`flex-1 resize-none bg-transparent p-5 font-mono text-sm leading-6 tracking-tight text-slate-100 outline-none ${
+                  questionType === "sql" ? "placeholder:text-slate-500" : "placeholder:text-slate-400"
+                }`}
+                placeholder={config.starterCode}
+                spellCheck={false}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 bg-slate-900/60 px-5 py-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                  {!isDuckDbReady && questionType === "sql" && (
+                    <span className="rounded-full bg-slate-800 px-3 py-1">Preparing DuckDB...</span>
+                  )}
+                  {duckDbTables.length > 0 && questionType === "sql" && (
+                    <span className="rounded-full bg-slate-800 px-3 py-1">
+                      Tables: {duckDbTables.slice(0, 4).join(", ")}
+                      {duckDbTables.length > 4 ? ` +${duckDbTables.length - 4}` : ""}
+                    </span>
+                  )}
+                  {sqlError && (
+                    <span className="rounded-full bg-rose-900/60 px-3 py-1 text-rose-200">
+                      {sqlError}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => handleExecuteSQL(sqlCode)}
+                    disabled={
+                      isExecutingSql ||
+                      !sqlCode.trim() ||
+                      (questionType === "sql" && (!isDuckDbReady || isPreparingDuckDb))
+                    }
+                    className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
+                  >
+                    <Play className="h-4 w-4" />
+                    Run
+                  </button>
+                  <button
+                    onClick={() => markQuestionCompleted(question)}
+                    className="rounded-lg border border-emerald-500 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    Submit
+                  </button>
+                  <button
+                    onClick={() => handleNavigateExerciseQuestion(1)}
+                    disabled={!hasNextQuestion || isPreparingDuckDb || isDuckDbLoading}
+                    className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
-          )}
+          </div>
+          <div className="flex-1 overflow-x-auto overflow-y-auto px-6 py-5">
+            <div className="flex h-full flex-col rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
+              <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
+                <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Output</h4>
+                {(isDuckDbLoading || isPreparingDuckDb) && (
+                  <div className="flex items-center gap-2 text-xs text-indigo-300">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
+                    <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Loading datasets..."}</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 overflow-auto px-5 py-4 font-mono text-sm text-emerald-200">
+                {duckDbError && (
+                  <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-900/30 px-3 py-2 text-rose-200">
+                    {duckDbError}
+                  </div>
+                )}
+                {duckDbSetupError && (
+                  <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-900/20 px-3 py-2 text-rose-200">
+                    {duckDbSetupError}
+                  </div>
+                )}
+                {sqlResults.length === 0 && !sqlError && !isExecutingSql && (
+                  <div className="text-sm text-slate-400">
+                    {sqlCode.trim()
+                      ? "Run your solution to inspect the output here."
+                      : "Start coding above to see your output stream here."}
+                  </div>
+                )}
+                {sqlResults.map((result, index) => (
+                  <div key={index} className="mb-6">
+                    {result.columns.length > 0 && result.values.length > 0 ? (
+                      <div className="rounded-lg border border-emerald-500/30 overflow-x-auto">
+                        <table className="min-w-full border-collapse text-xs">
+                          <thead className="bg-emerald-900/40 text-emerald-100">
+                            <tr>
+                              {result.columns.map((col: string) => (
+                                <th key={col} className="px-3 py-2 text-left font-semibold">
+                                  {col}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {result.values.slice(0, 15).map((row: any[], rowIndex: number) => (
+                              <tr
+                                key={rowIndex}
+                                className={rowIndex % 2 === 0 ? "bg-emerald-950/60" : "bg-emerald-900/40"}
+                              >
+                                {row.map((cell: any, cellIndex: number) => (
+                                  <td key={cellIndex} className="px-3 py-2 text-emerald-200">
+                                    {cell ?? "NULL"}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                            {result.values.length > 15 && (
+                              <tr>
+                                <td
+                                  colSpan={result.columns.length}
+                                  className="px-3 py-2 text-center text-xs text-emerald-300"
+                                >
+                                  ... {result.values.length - 15} more rows ...
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-emerald-500/40 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200">
+                        Query executed successfully (no rows returned).
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -4034,13 +4596,17 @@ export function SubjectLearningInterface({
 
   return (
 
-    <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 h-full">
+    <div
+      className={`relative grid grid-cols-1 gap-6 h-full ${
+        !isContentExpanded ? "xl:grid-cols-[1fr_380px]" : ""
+      }`}
+    >
 
       <div ref={mainContentRef} className="space-y-6">
 
         <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-6 backdrop-blur-xl shadow-lg">
 
-          <div className="flex items-start justify-between mb-4">
+          <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 
             <div>
 
@@ -4052,7 +4618,7 @@ export function SubjectLearningInterface({
 
               </h1>
 
-              <div className="flex items-center gap-4 text-sm text-gray-600">
+              <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600">
 
                 <div className="flex items-center gap-2">
 
@@ -4078,18 +4644,29 @@ export function SubjectLearningInterface({
 
             </div>
 
-            <div className="text-right">
+            <div className="flex w-full flex-col items-end gap-3 sm:flex-row sm:items-center sm:justify-end lg:w-auto lg:flex-col lg:items-end">
+              <button
+                type="button"
+                onClick={toggleContentExpanded}
+                className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-white/80 px-4 py-2 text-sm font-medium text-indigo-600 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-400/70 focus:ring-offset-1"
+              >
+                <Menu className="h-4 w-4" />
+                {isContentExpanded ? "Browse Outline" : "Collapse Outline"}
+              </button>
 
-              <div className="text-sm text-gray-600 mb-1">Progress</div>
+              <div className="text-right">
 
-              <div className="text-2xl font-bold text-indigo-600">
+                <div className="text-sm text-gray-600 mb-1">Progress</div>
 
-                {completedSections}/{totalSections}
+                <div className="text-2xl font-bold text-indigo-600">
+
+                  {completedSections}/{totalSections}
+
+                </div>
+
+                <div className="text-xs text-gray-500">lessons completed</div>
 
               </div>
-
-              <div className="text-xs text-gray-500">lessons completed</div>
-
             </div>
 
           </div>
@@ -4180,16 +4757,30 @@ export function SubjectLearningInterface({
 
       </div>
 
-      <div className="space-y-6 lg:max-h-[calc(100dvh-4rem)] lg:overflow-y-auto lg:pr-2 lg:[scrollbar-width:thin] lg:[&::-webkit-scrollbar]:w-2 lg:[&::-webkit-scrollbar-thumb]:rounded-full lg:[&::-webkit-scrollbar-thumb]:bg-slate-300/60 lg:hover:[&::-webkit-scrollbar-thumb]:bg-slate-400/70 lg:[&::-webkit-scrollbar-track]:bg-transparent">
-        {activePracticeTitle ? (
-          <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
-            <div className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">Practice Exercise</div>
-            <p className="mt-3 text-xl font-semibold text-gray-900">{activePracticeTitle}</p>
+      {!isContentExpanded && (
+        <aside
+          className="fixed inset-0 z-40 flex flex-col gap-4 overflow-y-auto bg-white/95 px-4 py-6 backdrop-blur-md shadow-xl sm:px-6 xl:static xl:z-auto xl:gap-6 xl:bg-transparent xl:px-0 xl:py-0 xl:shadow-none xl:[scrollbar-width:thin] xl:[&::-webkit-scrollbar]:w-2 xl:[&::-webkit-scrollbar-thumb]:rounded-full xl:[&::-webkit-scrollbar-thumb]:bg-slate-300/60 xl:hover:[&::-webkit-scrollbar-thumb]:bg-slate-400/70 xl:[&::-webkit-scrollbar-track]:bg-transparent xl:max-h-[calc(100dvh-4rem)] xl:overflow-y-auto xl:pr-2"
+        >
+          <div className="flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-indigo-700 shadow-sm xl:hidden">
+            <span className="text-sm font-semibold">Course Outline</span>
+            <button
+              type="button"
+              onClick={closeNavigation}
+              className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-xs font-medium text-indigo-600 shadow-sm transition hover:bg-indigo-50"
+            >
+              Collapse
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-        ) : (
-          <>
+          {activePracticeTitle ? (
+            <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
+              <div className="text-xs font-semibold uppercase tracking-[0.3em] text-gray-500">Practice Exercise</div>
+              <p className="mt-3 text-xl font-semibold text-gray-900">{activePracticeTitle}</p>
+            </div>
+          ) : (
+            <>
 
-        <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
+          <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-4 backdrop-blur-xl shadow-lg">
 
           <div className="flex items-center gap-2 mb-3">
 
@@ -4298,52 +4889,54 @@ export function SubjectLearningInterface({
 
                         }}
 
-                        className={`w-full text-left p-3 rounded-xl transition-all flex items-center gap-3 ${
-
-                          isCurrentSection ? "bg-indigo-100 border border-indigo-200" : "hover:bg-gray-50"
-
+                        className={`group relative flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+                          isCurrentSection
+                            ? "border-indigo-300 bg-indigo-50/90 text-indigo-800 shadow-sm"
+                            : "border-transparent bg-white/80 text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/60"
                         }`}
 
                       >
 
-                        <div className="flex-shrink-0">
-
+                        <div
+                          className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl ${
+                            isCompleted
+                              ? "bg-emerald-100 text-emerald-600"
+                              : isCurrentSection
+                              ? "bg-indigo-100 text-indigo-600"
+                              : "bg-slate-100 text-slate-400 group-hover:bg-indigo-100 group-hover:text-indigo-500"
+                          }`}
+                        >
                           {isCompleted ? (
-
-                            <CheckCircle className="h-5 w-5 text-green-500" />
-
+                            <CheckCircle className="h-4 w-4" />
                           ) : isCurrentSection ? (
-
-                            <Play className="h-5 w-5 text-indigo-500" />
-
+                            <Play className="h-4 w-4" />
                           ) : (
-
-                            <Circle className="h-5 w-5 text-gray-400" />
-
+                            <Circle className="h-4 w-4" />
                           )}
-
                         </div>
 
                         <div className="flex-1 min-w-0">
 
                           <div
-
-                            className={`text-sm font-medium truncate ${
-
-                              isCurrentSection ? "text-indigo-900" : "text-gray-900"
-
+                            className={`truncate text-sm font-semibold ${
+                              isCurrentSection
+                                ? "text-indigo-900"
+                                : "text-slate-800 group-hover:text-indigo-700"
                             }`}
-
                           >
-
                             {section.title}
-
                           </div>
 
-                          <div className="text-xs text-gray-500 mt-1">
-
-                            {isCompleted ? "Completed" : isCurrentSection ? "Current" : "Not started"}
-
+                          <div
+                            className={`mt-1 text-xs ${
+                              isCompleted
+                                ? "text-emerald-600"
+                                : isCurrentSection
+                                ? "text-indigo-600"
+                                : "text-slate-500"
+                            }`}
+                          >
+                            {isCompleted ? "Completed" : isCurrentSection ? "In Progress" : "Not started"}
                           </div>
 
                         </div>
@@ -4394,15 +4987,23 @@ export function SubjectLearningInterface({
 
                                 }}
 
-                               className={`w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition ${
-
-                                  isActiveLecture ? "bg-indigo-100 text-indigo-900" : "text-gray-600 hover:bg-gray-50"
-
+                                className={`group flex w-full items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
+                                  isActiveLecture
+                                    ? "border-indigo-200 bg-indigo-50 text-indigo-800 shadow-sm"
+                                    : "border-transparent text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
                                 }`}
 
                               >
 
-                                <Play className="h-4 w-4" />
+                                <span
+                                  className={`flex h-7 w-7 items-center justify-center rounded-xl ${
+                                    isActiveLecture
+                                      ? "bg-indigo-100 text-indigo-600"
+                                      : "bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600"
+                                  }`}
+                                >
+                                  <Play className="h-3.5 w-3.5" />
+                                </span>
 
                                 <span>{lecture.title || `Lecture ${lectureIndex + 1}`}</span>
 
@@ -4470,11 +5071,21 @@ export function SubjectLearningInterface({
                                               );
                                               setShowQuestionPopup(true);
                                             }}
-                                            className={`w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition ${
-                                              isActiveQuestion ? "bg-indigo-100 text-indigo-900" : "text-gray-600 hover:bg-gray-50"
+                                            className={`group flex w-full items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
+                                              isActiveQuestion
+                                                ? "border-indigo-200 bg-indigo-50 text-indigo-800 shadow-sm"
+                                                : "border-transparent text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
                                             }`}
                                           >
-                                            <Code className="h-4 w-4" />
+                                            <span
+                                              className={`flex h-7 w-7 items-center justify-center rounded-xl ${
+                                                isActiveQuestion
+                                                  ? "bg-indigo-100 text-indigo-600"
+                                                  : "bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600"
+                                              }`}
+                                            >
+                                              <Code className="h-3.5 w-3.5" />
+                                            </span>
                                             <span className="text-left truncate">{question.question_text || question.text}</span>
                                           </button>
                                         );
@@ -4498,9 +5109,11 @@ export function SubjectLearningInterface({
                                   </div>
                                   <button
                                     onClick={() => handleSelectExercise(section.id, exercise)}
-                                    className="w-full rounded-lg px-3 py-2 text-sm flex items-center gap-2 transition text-gray-600 hover:bg-gray-50"
+                                    className="group flex w-full items-center gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-2 text-sm text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
                                   >
-                                    <Code className="h-4 w-4" />
+                                    <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600">
+                                      <Code className="h-3.5 w-3.5" />
+                                    </span>
                                     <span>Open Exercise</span>
                                   </button>
                                 </div>
@@ -4572,9 +5185,8 @@ export function SubjectLearningInterface({
 
           </>
         )}
-
-      </div>
-
+        </aside>
+      )}
     </div>
 
     );

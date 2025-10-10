@@ -345,34 +345,6 @@ export function PracticeArea({
               </div>
             )}
 
-            {/* Submission Result */}
-            {submissionResult && (
-              <div className={`p-3 rounded-lg border ${
-                submissionResult.isCorrect 
-                  ? 'bg-green-50 border-green-200' 
-                  : 'bg-red-50 border-red-200'
-              }`}>
-                <div className="flex items-center gap-2">
-                  {submissionResult.isCorrect ? (
-                    <Check className="w-4 h-4 text-green-600" />
-                  ) : (
-                    <X className="w-4 h-4 text-red-600" />
-                  )}
-                  <span className={`font-medium ${
-                    submissionResult.isCorrect ? 'text-green-800' : 'text-red-800'
-                  }`}>
-                    {submissionResult.isCorrect ? 'Correct!' : 'Incorrect'}
-                  </span>
-                </div>
-                {submissionResult.feedback && (
-                  <p className={`mt-1 text-sm ${
-                    submissionResult.isCorrect ? 'text-green-700' : 'text-red-700'
-                  }`}>
-                    {submissionResult.feedback}
-                  </p>
-                )}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -426,6 +398,53 @@ export function PracticeArea({
               minHeight: '400px'
             }}
           />
+        </div>
+        {/* Output Section */}
+        <div className="border-t border-gray-200 bg-white">
+          <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.25em] text-gray-500">
+              Output
+            </span>
+          </div>
+          <div className="px-4 py-3 text-sm text-gray-700 min-h-[120px] overflow-auto">
+            {submissionResult ? (
+              <div
+                className={`flex flex-col gap-2 rounded-lg border p-3 ${
+                  submissionResult.isCorrect
+                    ? 'border-green-200 bg-green-50'
+                    : 'border-red-200 bg-red-50'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {submissionResult.isCorrect ? (
+                    <Check className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <X className="h-4 w-4 text-red-600" />
+                  )}
+                  <span
+                    className={`font-medium ${
+                      submissionResult.isCorrect ? 'text-green-800' : 'text-red-800'
+                    }`}
+                  >
+                    {submissionResult.isCorrect ? 'Correct!' : 'Incorrect'}
+                  </span>
+                </div>
+                {submissionResult.feedback ? (
+                  <p
+                    className={`text-sm ${
+                      submissionResult.isCorrect ? 'text-green-700' : 'text-red-700'
+                    }`}
+                  >
+                    {submissionResult.feedback}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">
+                Run your solution to see detailed feedback here.
+              </p>
+            )}
+          </div>
         </div>
       </div>
     </div>
