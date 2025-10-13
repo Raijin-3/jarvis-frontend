@@ -4759,7 +4759,7 @@ export function SubjectLearningInterface({
 
       {!isContentExpanded && (
         <aside
-          className="fixed inset-0 z-40 flex flex-col gap-4 overflow-y-auto bg-white/95 px-4 py-6 backdrop-blur-md shadow-xl sm:px-6 xl:static xl:z-auto xl:gap-6 xl:bg-transparent xl:px-0 xl:py-0 xl:shadow-none xl:[scrollbar-width:thin] xl:[&::-webkit-scrollbar]:w-2 xl:[&::-webkit-scrollbar-thumb]:rounded-full xl:[&::-webkit-scrollbar-thumb]:bg-slate-300/60 xl:hover:[&::-webkit-scrollbar-thumb]:bg-slate-400/70 xl:[&::-webkit-scrollbar-track]:bg-transparent xl:max-h-[calc(100dvh-4rem)] xl:overflow-y-auto xl:pr-2"
+          className="fixed inset-x-0 bottom-0 top-16 z-40 flex flex-col gap-4 overflow-y-auto bg-white/95 px-4 py-6 backdrop-blur-md shadow-xl sm:px-6 xl:static xl:z-auto xl:gap-6 xl:bg-transparent xl:px-0 xl:py-0 xl:shadow-none xl:[scrollbar-width:thin] xl:[&::-webkit-scrollbar]:w-2 xl:[&::-webkit-scrollbar-thumb]:rounded-full xl:[&::-webkit-scrollbar-thumb]:bg-slate-300/60 xl:hover:[&::-webkit-scrollbar-thumb]:bg-slate-400/70 xl:[&::-webkit-scrollbar-track]:bg-transparent xl:max-h-[calc(100dvh-4rem)] xl:overflow-y-auto xl:pr-2"
         >
           <div className="flex items-center justify-between rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 text-indigo-700 shadow-sm xl:hidden">
             <span className="text-sm font-semibold">Course Outline</span>
