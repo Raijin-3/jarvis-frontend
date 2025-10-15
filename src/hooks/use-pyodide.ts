@@ -9,9 +9,23 @@ type ExecutionResult = {
   executionTime?: number;
 };
 
+type PyodidePackageName = string | string[];
+
+interface PyodideGlobals {
+  get: (name: string) => unknown;
+}
+
+interface PyodideInstance {
+  runPythonAsync: (code: string) => Promise<unknown>;
+  loadPackage: (packageName: PyodidePackageName) => Promise<unknown>;
+  globals: PyodideGlobals;
+}
+
+type LoadPyodideFn = (config: { indexURL: string }) => Promise<PyodideInstance>;
+
 declare global {
   interface Window {
-    loadPyodide: any;
+    loadPyodide?: LoadPyodideFn;
   }
 }
 
@@ -19,7 +33,7 @@ export function usePyodide() {
   const [isReady, setIsReady] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const pyodideRef = useRef<any>(null);
+  const pyodideRef = useRef<PyodideInstance | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -35,16 +49,21 @@ export function usePyodide() {
           script.src = 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js';
           script.async = true;
           
-          await new Promise((resolve, reject) => {
-            script.onload = resolve;
-            script.onerror = reject;
+          await new Promise<void>((resolve, reject) => {
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('Failed to load Pyodide script'));
             document.head.appendChild(script);
           });
         }
 
         if (!mounted) return;
 
-        const pyodide = await window.loadPyodide({
+        const loadPyodide = window.loadPyodide;
+        if (!loadPyodide) {
+          throw new Error('Pyodide loader not available on window');
+        }
+
+        const pyodide = await loadPyodide({
           indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
         });
 
@@ -107,21 +126,35 @@ _error = _stderr.getvalue()
 
       await pyodideRef.current.runPythonAsync(captureCode);
       
-      const output = pyodideRef.current.globals.get('_output');
-      const errorOutput = pyodideRef.current.globals.get('_error');
+      const outputValue = pyodideRef.current.globals.get('_output');
+      const errorValue = pyodideRef.current.globals.get('_error');
       const endTime = performance.now();
 
-      if (errorOutput) {
+      const errorText =
+        typeof errorValue === 'string'
+          ? errorValue
+          : errorValue != null
+          ? String(errorValue)
+          : '';
+
+      if (errorText.trim().length > 0) {
         return {
           success: false,
-          error: errorOutput,
+          error: errorText.trim(),
           executionTime: endTime - startTime,
         };
       }
 
+      const outputText =
+        typeof outputValue === 'string'
+          ? outputValue
+          : outputValue != null
+          ? String(outputValue)
+          : '';
+
       return {
         success: true,
-        output: output || 'Code executed successfully (no output)',
+        output: outputText || 'Code executed successfully (no output)',
         executionTime: endTime - startTime,
       };
     } catch (err) {
@@ -169,7 +202,7 @@ for module in list(sys.modules.keys()):
 
   const loadDataFrame = useCallback(async (
     varName: string,
-    data: any[]
+    data: Array<Record<string, unknown>>
   ): Promise<boolean> => {
     if (!pyodideRef.current || !isReady) {
       console.error('Python runtime not ready');

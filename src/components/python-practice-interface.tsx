@@ -6,19 +6,13 @@ import { toast } from "@/lib/toast";
 import { usePyodide } from "@/hooks/use-pyodide";
 import {
   PlayCircle,
-  Square,
   CheckCircle,
   XCircle,
   Clock,
-  Zap,
   RotateCcw,
   Database,
-  Table,
   Code,
-  Eye,
-  EyeOff,
   FileSpreadsheet,
-  Download,
   Loader2
 } from "lucide-react";
 
@@ -51,19 +45,88 @@ type ExecutionResult = {
   attempt_id?: string;
 };
 
+type DatasetCellValue = string | number | boolean | null;
+type DatasetRow = Record<string, DatasetCellValue>;
+
+interface DatasetSchemaInfo {
+  dataset_rows?: unknown;
+  dataset_columns?: unknown;
+  dataset_table_name?: string;
+  table_name?: string;
+  dataset_csv_raw?: string;
+  [key: string]: unknown;
+}
+
 interface Dataset {
   id: string;
   name: string;
   description?: string;
   subject_type: 'python';
   file_url?: string;
-  data_preview?: any[];
-  schema?: any;
+  data_preview?: DatasetRow[];
+  schema?: DatasetSchemaInfo;
+  schema_info?: DatasetSchemaInfo;
   record_count?: number;
   columns?: string[];
   table_name?: string;
-  data?: any[];
+  data?: DatasetRow[];
+  dataset_csv_raw?: string;
 }
+
+const sanitizeTableName = (name?: string): string => {
+  const fallback = "dataset";
+  if (!name) return fallback;
+  const sanitized = name
+    .replace(/[^a-zA-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  const candidate = sanitized || fallback;
+  return /^[a-z_]/.test(candidate) ? candidate : `data_${candidate}`;
+};
+
+const splitCsvLine = (line: string): string[] => {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  values.push(current.trim());
+
+  return values.map((value) => value.replace(/^"(.*)"$/, "$1"));
+};
+
+const parseCsvToObjects = (csv: string): DatasetRow[] => {
+  const trimmed = csv?.trim();
+  if (!trimmed) return [];
+  const lines = trimmed.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const headers = splitCsvLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const cells = splitCsvLine(line);
+    const entry: DatasetRow = {};
+    headers.forEach((header, idx) => {
+      entry[header] = cells[idx] ?? "";
+    });
+    return entry;
+  });
+};
 
 const DEFAULT_PYTHON_TEMPLATE = `# Python Practice Exercise
 # Write your Python code below
@@ -80,6 +143,26 @@ def solution():
 if __name__ == "__main__":
     solution()
 `;
+
+const getErrorMessage = (error: unknown, fallback = 'Execution failed'): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  return fallback;
+};
+
+const formatDatasetValue = (value: DatasetCellValue): string => {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  return String(value);
+};
 
 export function PythonPracticeInterface({
   exerciseId,
@@ -104,7 +187,6 @@ export function PythonPracticeInterface({
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
   const [activeTab, setActiveTab] = useState<'problem' | 'editor' | 'results' | 'datasets'>('editor');
   const [stdout, setStdout] = useState<string>('');
-  const [showExpected, setShowExpected] = useState(false);
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -116,6 +198,7 @@ export function PythonPracticeInterface({
     error: pyodideError,
     executeCode,
     loadPackage,
+    loadDataFrame,
     reset: resetPyodide
   } = usePyodide();
 
@@ -141,10 +224,62 @@ export function PythonPracticeInterface({
     const loadDatasets = async () => {
       try {
         const response: { datasets: Dataset[] } = await apiPost(`/v1/practice-coding/datasets/${questionId}`, {});
-        setDatasets(response.datasets || []);
+        const usedTableNames = new Set<string>();
+        const getUniqueTableName = (preferred?: string, fallbackSuffix?: number) => {
+          const baseName = sanitizeTableName(preferred) || `data_dataset_${fallbackSuffix ?? ""}`.replace(/_+$/, "");
+          let candidate = baseName;
+          let counter = 1;
+          while (usedTableNames.has(candidate)) {
+            candidate = `${baseName}_${counter++}`;
+          }
+          usedTableNames.add(candidate);
+          return candidate;
+        };
+
+        const normalized = Array.isArray(response.datasets)
+          ? response.datasets.map((dataset, index) => {
+              const schemaInfo = (dataset?.schema_info ?? dataset?.schema ?? {}) as DatasetSchemaInfo;
+              const csvRaw = dataset?.dataset_csv_raw ?? schemaInfo?.dataset_csv_raw ?? "";
+              const schemaRows = schemaInfo?.dataset_rows;
+              const schemaColumns = schemaInfo?.dataset_columns;
+              const resolvedData =
+                Array.isArray(dataset?.data) && dataset.data.length > 0
+                  ? dataset.data
+                  : Array.isArray(schemaRows)
+                  ? (schemaRows as DatasetRow[])
+                  : csvRaw
+                  ? parseCsvToObjects(csvRaw)
+                  : [];
+              const resolvedColumns =
+                Array.isArray(dataset?.columns) && dataset.columns.length > 0
+                  ? dataset.columns
+                  : Array.isArray(schemaColumns)
+                  ? (schemaColumns as string[])
+                  : resolvedData.length > 0
+                  ? Object.keys(resolvedData[0])
+                  : [];
+              const preferredTableName =
+                dataset?.table_name ||
+                schemaInfo?.dataset_table_name ||
+                schemaInfo?.table_name ||
+                dataset?.name ||
+                `dataset_${index + 1}`;
+
+              return {
+                ...dataset,
+                data: resolvedData,
+                columns: resolvedColumns,
+                table_name: getUniqueTableName(preferredTableName, index + 1),
+                dataset_csv_raw: csvRaw || undefined,
+              };
+            })
+          : [];
+        setDatasets(normalized);
+        setDatasetsLoaded(false);
       } catch (error) {
         console.error('Failed to load datasets:', error);
         setDatasets([]);
+        setDatasetsLoaded(false);
       }
     };
 
@@ -160,44 +295,102 @@ export function PythonPracticeInterface({
 
       try {
         // Load pandas if not already loaded
-        await loadPackage('pandas');
+        const pandasLoaded = await loadPackage('pandas');
+        if (!pandasLoaded) {
+          throw new Error('Unable to load pandas package in Pyodide');
+        }
 
         // Load each dataset as a pandas DataFrame
+        let successfulLoads = 0;
+        const failedDatasets: string[] = [];
+        const loadedDatasetInfo: { name: string; rows: number; columns: string[] }[] = [];
+        
         for (const dataset of datasets) {
-          if (dataset.data && dataset.data.length > 0) {
-            const varName = dataset.table_name || dataset.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-            
-            // Convert data to JSON string
-            const dataJson = JSON.stringify(dataset.data);
-            
-            // Create DataFrame in Pyodide
-            const loadCode = `
-import pandas as pd
-import json
-
-# Load dataset: ${dataset.name}
-${varName}_data = json.loads('''${dataJson}''')
-${varName} = pd.DataFrame(${varName}_data)
-print(f"Loaded dataset '${varName}' with {len(${varName})} rows")
-`;
-            
-            await executeCode(loadCode);
+          if (Array.isArray(dataset.data) && dataset.data.length > 0) {
+            const varName = dataset.table_name || sanitizeTableName(dataset.name);
+            const loaded = await loadDataFrame(varName, dataset.data);
+            if (!loaded) {
+              console.warn(`Failed to load dataset ${varName} into Pyodide.`);
+              failedDatasets.push(varName);
+            } else {
+              successfulLoads += 1;
+              loadedDatasetInfo.push({
+                name: varName,
+                rows: dataset.data.length,
+                columns: dataset.columns || Object.keys(dataset.data[0] || {})
+              });
+            }
+          } else if (dataset.dataset_csv_raw) {
+            const parsed = parseCsvToObjects(dataset.dataset_csv_raw);
+            if (parsed.length > 0) {
+              const varName = dataset.table_name || sanitizeTableName(dataset.name);
+              const loaded = await loadDataFrame(varName, parsed);
+              if (!loaded) {
+                console.warn(`Failed to load CSV dataset ${varName} into Pyodide.`);
+                failedDatasets.push(varName);
+              } else {
+                successfulLoads += 1;
+                loadedDatasetInfo.push({
+                  name: varName,
+                  rows: parsed.length,
+                  columns: Object.keys(parsed[0] || {})
+                });
+              }
+            }
           }
         }
 
         setDatasetsLoaded(true);
-        toast.success('Datasets loaded successfully');
+
+        // Pre-populate code editor with imports and dataset info
+        if (loadedDatasetInfo.length > 0) {
+          const preloadedCode = `import pandas as pd
+import numpy as np
+
+# Datasets loaded:
+${loadedDatasetInfo.map(ds => `# - ${ds.name}: ${ds.rows} rows × ${ds.columns.length} columns`).join('\n')}
+${loadedDatasetInfo.map(ds => `#   Columns: ${ds.columns.join(', ')}`).join('\n')}
+
+# Write your code below:
+def solution():
+    # Your code here
+    pass
+
+# Test your solution
+if __name__ == "__main__":
+    solution()
+`;
+          setCode(preloadedCode);
+          
+          // Display dataset info in output
+          const outputMessages = loadedDatasetInfo.map(ds => 
+            `✓ Dataset '${ds.name}' loaded: ${ds.rows} rows × ${ds.columns.length} columns\n  Columns: ${ds.columns.join(', ')}`
+          ).join('\n\n');
+          
+          setStdout(`📊 Datasets loaded successfully!\n\n${outputMessages}\n\nYou can now use these DataFrames in your Python code.`);
+        }
+
+        if (successfulLoads > 0 && failedDatasets.length === 0) {
+          toast.success('Datasets loaded successfully');
+        } else if (successfulLoads > 0) {
+          toast(`Loaded ${successfulLoads} dataset(s), but failed to load: ${failedDatasets.join(', ')}`);
+        } else if (failedDatasets.length > 0) {
+          toast.error('Failed to load datasets into Python environment');
+        } else {
+          toast('Datasets fetched, but no rows were provided to load into Python');
+        }
       } catch (error) {
         console.error('Failed to initialize datasets:', error);
         toast.error('Failed to load datasets into Python environment');
+        setDatasetsLoaded(true);
       }
     };
 
     initializeDatasets();
-  }, [pyodideReady, datasets, datasetsLoaded, loadPackage, executeCode]);
+  }, [pyodideReady, datasets, datasetsLoaded, loadPackage, loadDataFrame]);
 
   // Execute code against test cases
-  const executeAgainstTestCases = async (userCode: string): Promise<TestCase[]> => {
+  const executeAgainstTestCases = useCallback(async (userCode: string): Promise<TestCase[]> => {
     const results: TestCase[] = [];
 
     for (const testCase of testCases) {
@@ -238,20 +431,20 @@ ${userCode}
           exit_code: result.success ? 0 : 1,
           error_message: errorMessage,
         });
-      } catch (error: any) {
+      } catch (error) {
         results.push({
           ...testCase,
           actual_output: '',
           passed: false,
           execution_time: 0,
           exit_code: -1,
-          error_message: error.message || 'Execution failed',
+          error_message: getErrorMessage(error),
         });
       }
     }
 
     return results;
-  };
+  }, [testCases, executeCode]);
 
   // Validate output
   const validateOutput = (actualOutput: string, expectedOutput: string): boolean => {
@@ -344,14 +537,15 @@ ${userCode}
       } else {
         toast.error('Some test cases failed');
       }
-    } catch (error: any) {
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unknown error');
       console.error('Execution failed:', error);
-      toast.error('Execution failed: ' + (error.message || 'Unknown error'));
-      setStdout(error.message || 'Execution failed');
+      toast.error('Execution failed: ' + message);
+      setStdout(message);
     } finally {
       setIsExecuting(false);
     }
-  }, [code, testCases, pyodideReady, isExecuting, isSubmitting, executeCode]);
+  }, [code, testCases, pyodideReady, isExecuting, isSubmitting, executeCode, executeAgainstTestCases]);
 
   // Handle submission
   const handleSubmit = useCallback(async () => {
@@ -407,13 +601,15 @@ ${userCode}
 
       // Notify parent component
       onSubmit?.(result);
-    } catch (error: any) {
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unknown error');
       console.error('Submission failed:', error);
-      toast.error('Submission failed: ' + (error.message || 'Unknown error'));
+      toast.error('Submission failed: ' + message);
+      setExecutionResult(null);
     } finally {
       setIsSubmitting(false);
     }
-  }, [exerciseId, questionId, code, testCases, pyodideReady, isExecuting, isSubmitting, executeCode, onSubmit]);
+  }, [exerciseId, questionId, code, pyodideReady, isExecuting, isSubmitting, onSubmit, executeAgainstTestCases]);
 
   // Reset code
   const resetCode = () => {
@@ -598,7 +794,16 @@ ${userCode}
         {/* Datasets Tab */}
         {activeTab === 'datasets' && (
           <div className="space-y-4">
-            {datasets.map((dataset) => (
+            {datasets.length === 0 ? (
+              <div className="bg-white rounded-lg p-8 shadow-sm border border-gray-200 text-center">
+                <Database className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                <h4 className="text-lg font-semibold text-gray-900 mb-2">No Datasets Available</h4>
+                <p className="text-sm text-gray-600">
+                  This exercise doesn't have any datasets attached yet.
+                </p>
+              </div>
+            ) : (
+              datasets.map((dataset) => (
               <div key={dataset.id} className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
                 <div className="flex items-center justify-between mb-3">
                   <div>
@@ -623,14 +828,21 @@ ${userCode}
                   </div>
                 )}
 
-                {dataset.data_preview && dataset.data_preview.length > 0 && (
+                {((dataset.data && dataset.data.length > 0) || (dataset.data_preview && dataset.data_preview.length > 0)) && (
                   <div>
-                    <p className="text-xs font-medium text-gray-500 mb-2">Preview (first 5 rows):</p>
+                    <p className="text-xs font-medium text-gray-500 mb-2">
+                      Preview (first 5 rows):
+                      {dataset.record_count && (
+                        <span className="ml-2 text-gray-400">
+                          Total: {dataset.record_count} rows
+                        </span>
+                      )}
+                    </p>
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-xs border border-gray-200">
                         <thead className="bg-gray-50">
                           <tr>
-                            {Object.keys(dataset.data_preview[0]).map((key) => (
+                            {Object.keys((dataset.data && dataset.data.length > 0 ? dataset.data : dataset.data_preview)[0]).map((key) => (
                               <th key={key} className="px-3 py-2 text-left font-medium text-gray-700 border-b">
                                 {key}
                               </th>
@@ -638,13 +850,16 @@ ${userCode}
                           </tr>
                         </thead>
                         <tbody>
-                          {dataset.data_preview.slice(0, 5).map((row, idx) => (
+                          {(dataset.data && dataset.data.length > 0 ? dataset.data : dataset.data_preview).slice(0, 5).map((row, idx) => (
                             <tr key={idx} className="border-b">
-                              {Object.values(row).map((val: any, cellIdx) => (
-                                <td key={cellIdx} className="px-3 py-2 text-gray-600">
-                                  {String(val)}
-                                </td>
-                              ))}
+                              {Object.values(row as Record<string, DatasetCellValue>).map((val, cellIdx) => {
+                                const displayValue = formatDatasetValue(val);
+                                return (
+                                  <td key={cellIdx} className="px-3 py-2 text-gray-600">
+                                    {displayValue}
+                                  </td>
+                                );
+                              })}
                             </tr>
                           ))}
                         </tbody>
@@ -653,13 +868,22 @@ ${userCode}
                   </div>
                 )}
 
-                <div className="mt-3 text-xs text-gray-500">
-                  Variable name: <code className="bg-gray-100 px-1 py-0.5 rounded">
-                    {dataset.table_name || dataset.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}
-                  </code>
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-xs text-gray-500">
+                    Variable name: <code className="bg-gray-100 px-1 py-0.5 rounded">
+                      {dataset.table_name || dataset.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}
+                    </code>
+                  </div>
+                  {dataset.data && dataset.data.length > 0 && (
+                    <div className="text-xs text-green-600 flex items-center gap-1">
+                      <CheckCircle className="h-3 w-3" />
+                      Loaded in Python
+                    </div>
+                  )}
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
         )}
 

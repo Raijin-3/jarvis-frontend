@@ -18,6 +18,7 @@ import { PracticeArea } from "@/components/practice-area";
 import { useVideoState } from "@/hooks/use-video-state";
 import { supabaseBrowser } from '@/lib/supabase-browser';
 import { useDuckDB } from "@/hooks/use-duckdb";
+import { usePyodide } from "@/hooks/use-pyodide";
 
 import {
   Activity,
@@ -31,6 +32,7 @@ import {
   Clock,
   Code,
   FileText,
+  Download,
   Play,
 } from "lucide-react";
 
@@ -91,10 +93,35 @@ type Dataset = {
   placeholders?: string[];
 };
 
+interface QuestionDatasetSchemaInfo extends Record<string, unknown> {
+  creation_sql?: string;
+  dataset_rows?: Array<Record<string, unknown>>;
+  dataset_columns?: string[];
+  dataset_table_name?: string;
+  dataset_csv_raw?: string;
+  table_name?: string;
+}
+
+interface QuestionDatasetRecord extends Record<string, unknown> {
+  id?: string;
+  name?: string;
+  description?: string;
+  creation_sql?: string;
+  dataset?: unknown;
+  table_name?: string;
+  columns?: string[];
+  data?: Array<Record<string, unknown>>;
+  schema_info?: QuestionDatasetSchemaInfo;
+  dataset_csv_raw?: string;
+  placeholders?: string[];
+}
+
 type DatasetPreview = {
   columns: string[];
   rows: unknown[][];
 };
+
+const DATASET_TIMESTAMP_COLUMNS = new Set(["InteractionDate", "ResolutionDate"]);
 
 type SqlDatasetDefinition = {
   id: string;
@@ -206,28 +233,604 @@ const getExerciseQuestionKey = (question: any, fallbackIndex: number): string =>
   return `question-${normalizedIndex}`;
 };
 
-const normalizeCreationSql = (value?: string | null): string | undefined => {
+type NormalizeCreationSqlOptions = {
+  datasetType?: string | null;
+  preserveFormatting?: boolean;
+};
+
+const resolveDatasetLanguage = (...values: Array<unknown>): string | undefined => {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed.toLowerCase();
+      }
+    }
+  }
+  return undefined;
+};
+
+const stripCodeFence = (value: string, { trimResult = true }: { trimResult?: boolean } = {}) => {
+  const fullFenceMatch = value.match(/^```[\w+-]*\n([\s\S]*?)\n```$/i);
+  if (fullFenceMatch) {
+    const inner = fullFenceMatch[1];
+    return trimResult ? inner.trim() : inner;
+  }
+
+  let stripped = value;
+  stripped = stripped.replace(/^```[\w+-]*\s*\r?\n?/, "");
+  stripped = stripped.replace(/\r?\n?```[\w+-]*\s*$/, "");
+  return trimResult ? stripped.trim() : stripped;
+};
+
+const normalizeCreationSql = (
+  value?: string | null,
+  options: NormalizeCreationSqlOptions = {},
+): string | undefined => {
   if (!value || typeof value !== "string") {
     return undefined;
   }
 
-  let normalized = value.replace(/\r\n/g, "\n").trim();
+  const datasetType = resolveDatasetLanguage(options.datasetType);
+  const preserveFormatting = options.preserveFormatting ?? datasetType === "python";
+
+  let normalized = value.replace(/\r\n/g, "\n");
+  if (!preserveFormatting) {
+    normalized = normalized.trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    normalized = stripCodeFence(normalized, { trimResult: true });
+
+    normalized = normalized.replace(/\s*```[\w+-]*\s*$/gi, "").trim();
+    normalized = normalized.replace(/\s+```[\w+-]*\s*/gi, " ").trim();
+
+    return normalized || undefined;
+  }
+
+  normalized = stripCodeFence(normalized, { trimResult: false });
+
+  // Preserve formatting but remove non-printable BOM if present
+  if (normalized.charCodeAt(0) === 0xfeff) {
+    normalized = normalized.slice(1);
+  }
+
+  return normalized || undefined;
+};
+
+const normalizeQuestionDataset = (
+  rawDataset: unknown,
+  context?: { questionId?: string; questionTitle?: string; subjectType?: string | null }
+): QuestionDatasetRecord | null => {
+  if (!rawDataset) {
+    return null;
+  }
+
+  const contextSubjectType = resolveDatasetLanguage(context?.subjectType);
+
+  if (typeof rawDataset === "string") {
+    const creationSql = normalizeCreationSql(rawDataset, {
+      datasetType: contextSubjectType,
+    });
+    if (!creationSql) {
+      return null;
+    }
+
+    const datasetCsv = extractCsvFromSource(creationSql);
+
+    return {
+      id: context?.questionId,
+      name: context?.questionTitle ?? "Question Dataset",
+      creation_sql: creationSql,
+      dataset_csv_raw: datasetCsv,
+      subject_type: contextSubjectType,
+    };
+  }
+
+  if (typeof rawDataset !== "object" || Array.isArray(rawDataset)) {
+    return null;
+  }
+
+  const base = rawDataset as Record<string, unknown>;
+  const schemaInfoRaw = base.schema_info;
+  const datasetSubjectType = resolveDatasetLanguage(
+    base.subject_type,
+    base.type,
+    base.question_type,
+    contextSubjectType,
+  );
+
+  const schemaInfo =
+    schemaInfoRaw && typeof schemaInfoRaw === "object" && !Array.isArray(schemaInfoRaw)
+      ? (() => {
+          const normalizedSchemaCreationSql = normalizeCreationSql(
+            (schemaInfoRaw as QuestionDatasetSchemaInfo).creation_sql ?? undefined,
+            { datasetType: datasetSubjectType },
+          );
+          const existingSchemaCsv = (schemaInfoRaw as QuestionDatasetSchemaInfo).dataset_csv_raw;
+          const normalizedSchemaCsv =
+            typeof existingSchemaCsv === "string" && existingSchemaCsv.trim().length > 0
+              ? extractCsvFromSource(existingSchemaCsv) ?? existingSchemaCsv
+              : extractCsvFromSource(normalizedSchemaCreationSql);
+
+          return {
+            ...(schemaInfoRaw as QuestionDatasetSchemaInfo),
+            creation_sql: normalizedSchemaCreationSql,
+            dataset_csv_raw: normalizedSchemaCsv,
+          };
+        })()
+      : undefined;
+
+  const schemaRows =
+    schemaInfo && Array.isArray(schemaInfo.dataset_rows) && schemaInfo.dataset_rows.length > 0
+      ? schemaInfo.dataset_rows
+      : undefined;
+
+  const schemaColumns =
+    schemaInfo && Array.isArray(schemaInfo.dataset_columns) && schemaInfo.dataset_columns.length > 0
+      ? schemaInfo.dataset_columns
+      : undefined;
+
+  const normalizedCreationSql = normalizeCreationSql(
+    (base.creation_sql as string | undefined) ??
+      (base.sql as string | undefined) ??
+      (base.dataset as string | undefined),
+    { datasetType: datasetSubjectType },
+  );
+
+  let datasetCsvRaw: string | undefined;
+  if (typeof base.dataset_csv_raw === "string" && base.dataset_csv_raw.trim().length > 0) {
+    datasetCsvRaw = extractCsvFromSource(base.dataset_csv_raw) ?? base.dataset_csv_raw;
+  } else if (
+    typeof schemaInfo?.dataset_csv_raw === "string" &&
+    schemaInfo.dataset_csv_raw.trim().length > 0
+  ) {
+    datasetCsvRaw = extractCsvFromSource(schemaInfo.dataset_csv_raw) ?? schemaInfo.dataset_csv_raw;
+  } else {
+    datasetCsvRaw = extractCsvFromSource(normalizedCreationSql);
+  }
+
+  const parsedCsvRows = datasetCsvRaw ? parseCsvToObjects(datasetCsvRaw) : [];
+
+  let dataArray =
+    Array.isArray(base.data) && base.data.length > 0
+      ? (base.data as Array<Record<string, unknown>>)
+      : schemaRows;
+
+  if ((!dataArray || dataArray.length === 0) && parsedCsvRows.length > 0) {
+    dataArray = parsedCsvRows;
+  }
+
+  let columnsArray =
+    Array.isArray(base.columns) && base.columns.length > 0
+      ? (base.columns as string[])
+      : schemaColumns ?? (dataArray && dataArray.length > 0 ? Object.keys(dataArray[0]) : undefined);
+
+  if ((!columnsArray || columnsArray.length === 0) && parsedCsvRows.length > 0) {
+    columnsArray = Object.keys(parsedCsvRows[0]);
+  }
+
+  const tableName =
+    (base.table_name as string | undefined) ??
+    schemaInfo?.table_name ??
+    schemaInfo?.dataset_table_name;
+
+  return {
+    ...base,
+    id: (base.id as string | undefined) ?? context?.questionId,
+    name:
+      (base.name as string | undefined) ?? context?.questionTitle ?? "Question Dataset",
+    description: (base.description as string | undefined) ?? undefined,
+    creation_sql: normalizedCreationSql,
+    table_name: tableName,
+    columns: columnsArray,
+    data: dataArray,
+    schema_info: schemaInfo,
+    dataset_csv_raw: datasetCsvRaw,
+    placeholders: Array.isArray(base.placeholders) ? (base.placeholders as string[]) : undefined,
+    subject_type:
+      datasetSubjectType ??
+      (typeof base.subject_type === "string" ? base.subject_type : undefined),
+  };
+};
+
+type PythonDatasetDefinition = {
+  id: string;
+  name: string;
+  description?: string;
+  data?: unknown[];
+  columns?: string[];
+  dataset_csv_raw?: string;
+  schema_info?: QuestionDatasetSchemaInfo;
+  table_name?: string;
+  source?: string;
+};
+
+type PythonDatasetDetail = {
+  id: string;
+  name: string;
+  description?: string;
+  columns: string[];
+  objectRows: Record<string, unknown>[];
+  previewRows: unknown[][];
+  pythonVariable: string;
+  rowCount: number;
+  datasetCsv?: string;
+  loadError?: string;
+};
+
+type PythonDatasetLoadState = {
+  state: "idle" | "loading" | "loaded" | "failed";
+  message?: string;
+  variable?: string;
+};
+
+const sanitizePythonIdentifier = (value?: string | null, fallback = "dataset") => {
+  if (!value || typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value
+    .replace(/[^a-zA-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
   if (!normalized) {
+    return fallback;
+  }
+  return /^[a-z_]/.test(normalized) ? normalized : `data_${normalized}`;
+};
+
+const splitCsvLine = (line: string): string[] => {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  values.push(current.trim());
+
+  return values.map((value) => value.replace(/^"(.*)"$/, "$1"));
+};
+
+const extractCsvFromSource = (source?: string | null): string | undefined => {
+  if (!source || typeof source !== "string") {
     return undefined;
   }
 
-  const fencedMatch = normalized.match(/^```[\w+-]*\n([\s\S]*?)\n```$/i);
-  if (fencedMatch) {
-    normalized = fencedMatch[1].trim();
-  } else {
-    normalized = normalized.replace(/^```[\w+-]*\s*/i, "").trim();
-    normalized = normalized.replace(/\s*```[\w+-]*$/i, "").trim();
+  const normalized = source.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const commentPattern = /^\s*(\/\/|--|#)/;
+  const headerSqlPattern =
+    /\b(select|create|insert|update|delete|merge|with|drop|alter|table|into|values)\b/i;
+
+  const csvLines: string[] = [];
+  let headerDetected = false;
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+
+    if (!headerDetected) {
+      if (!trimmed) {
+        continue;
+      }
+      if (commentPattern.test(trimmed)) {
+        continue;
+      }
+      if (headerSqlPattern.test(trimmed)) {
+        return undefined;
+      }
+
+      const cells = splitCsvLine(rawLine);
+      if (cells.length <= 1) {
+        continue;
+      }
+
+      csvLines.push(rawLine.replace(/\s+$/, ""));
+      headerDetected = true;
+    } else {
+      if (!trimmed) {
+        continue;
+      }
+      if (commentPattern.test(trimmed)) {
+        continue;
+      }
+      csvLines.push(rawLine.replace(/\s+$/, ""));
+    }
   }
 
-  normalized = normalized.replace(/\s*```[\w+-]*\s*$/gi, "").trim();
-  normalized = normalized.replace(/\s+```[\w+-]*\s*/gi, " ").trim();
+  if (!headerDetected || csvLines.length < 2) {
+    return undefined;
+  }
 
-  return normalized || undefined;
+  return csvLines.join("\n");
+};
+
+const parseCsvToObjects = (csv?: string | null): Record<string, unknown>[] => {
+  const sanitized = extractCsvFromSource(csv);
+  if (!sanitized) return [];
+  const lines = sanitized.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.length < 2) return [];
+
+  const headers = splitCsvLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const cells = splitCsvLine(line);
+    const entry: Record<string, unknown> = {};
+    headers.forEach((header, idx) => {
+      entry[header] = cells[idx] ?? "";
+    });
+    return entry;
+  });
+};
+
+const buildDatasetPreviewFromRecord = (dataset: any): DatasetPreview | null => {
+  if (!dataset) {
+    return null;
+  }
+
+  let workingDataset = dataset;
+
+  if (typeof workingDataset === "string") {
+    const csvContent = extractCsvFromSource(workingDataset);
+    if (!csvContent) {
+      return null;
+    }
+    const parsed = parseCsvToObjects(csvContent);
+    if (!parsed.length) {
+      return null;
+    }
+    workingDataset = {
+      data: parsed,
+      columns: Object.keys(parsed[0]),
+      dataset_csv_raw: csvContent,
+    };
+  }
+
+  const schemaInfo =
+    workingDataset && typeof workingDataset === "object" && !Array.isArray(workingDataset)
+      ? (workingDataset as { schema_info?: QuestionDatasetSchemaInfo }).schema_info
+      : undefined;
+
+  let csvRaw: string | undefined;
+
+  const inlineCsv =
+    typeof (workingDataset as { dataset_csv_raw?: unknown })?.dataset_csv_raw === "string"
+      ? (workingDataset as { dataset_csv_raw?: string }).dataset_csv_raw
+      : undefined;
+  const schemaCsv =
+    typeof schemaInfo?.dataset_csv_raw === "string"
+      ? schemaInfo.dataset_csv_raw
+      : undefined;
+
+  if (inlineCsv && inlineCsv.trim().length > 0) {
+    csvRaw = extractCsvFromSource(inlineCsv) ?? inlineCsv;
+  } else if (schemaCsv && schemaCsv.trim().length > 0) {
+    csvRaw = extractCsvFromSource(schemaCsv) ?? schemaCsv;
+  }
+
+  if (!csvRaw) {
+    const creationCandidate =
+      typeof (workingDataset as { creation_sql?: string })?.creation_sql === "string"
+        ? (workingDataset as { creation_sql?: string }).creation_sql
+        : typeof schemaInfo?.creation_sql === "string"
+        ? schemaInfo.creation_sql
+        : undefined;
+    csvRaw = extractCsvFromSource(creationCandidate);
+  }
+
+  let rows: any[] = Array.isArray((workingDataset as { data?: unknown[] })?.data)
+    ? ((workingDataset as { data?: unknown[] }).data as any[])
+    : [];
+
+  if ((!rows || rows.length === 0) && Array.isArray(schemaInfo?.dataset_rows)) {
+    rows = schemaInfo.dataset_rows;
+  }
+
+  if ((!rows || rows.length === 0) && csvRaw) {
+    const parsedRows = parseCsvToObjects(csvRaw);
+    if (parsedRows.length) {
+      rows = parsedRows;
+    }
+  }
+
+  if (!rows || rows.length === 0) {
+    return null;
+  }
+
+  let columns: string[] = Array.isArray((workingDataset as { columns?: unknown[] })?.columns)
+    ? ((workingDataset as { columns?: unknown[] }).columns as unknown[])
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+
+  if ((!columns || columns.length === 0) && Array.isArray(schemaInfo?.dataset_columns)) {
+    columns = schemaInfo.dataset_columns.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+  }
+
+  const firstRow = rows[0];
+
+  if (!columns || columns.length === 0) {
+    if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
+      columns = Object.keys(firstRow as Record<string, unknown>);
+    } else if (Array.isArray(firstRow)) {
+      const maxLength = rows.reduce(
+        (max, row) => (Array.isArray(row) ? Math.max(max, row.length) : max),
+        0,
+      );
+      columns = Array.from({ length: maxLength }, (_, index) => `column_${index + 1}`);
+    } else {
+      columns = ["value"];
+    }
+  } else if (Array.isArray(firstRow) && columns.length < firstRow.length) {
+    const maxLength = rows.reduce(
+      (max, row) => (Array.isArray(row) ? Math.max(max, row.length) : max),
+      columns.length,
+    );
+    const nextColumns = columns.slice();
+    for (let idx = nextColumns.length; idx < maxLength; idx++) {
+      nextColumns.push(`column_${idx + 1}`);
+    }
+    columns = nextColumns;
+  }
+
+  if (!columns || columns.length === 0) {
+    return null;
+  }
+
+  const previewRows = rows.slice(0, 20).map((row) => {
+    if (row && typeof row === "object" && !Array.isArray(row)) {
+      const typedRow = row as Record<string, unknown>;
+      return columns.map((column) => (column in typedRow ? typedRow[column] ?? null : null));
+    }
+    if (Array.isArray(row)) {
+      return columns.map((_, index) => row[index] ?? null);
+    }
+    return columns.map(() => row ?? null);
+  });
+
+  return {
+    columns,
+    rows: previewRows,
+  };
+};
+
+const buildPythonDatasetDetail = (
+  dataset: PythonDatasetDefinition,
+  index: number,
+): PythonDatasetDetail => {
+  const schemaInfo = dataset.schema_info;
+
+  let csvRaw: string | undefined;
+
+  if (typeof dataset.dataset_csv_raw === "string" && dataset.dataset_csv_raw.trim().length > 0) {
+    csvRaw = extractCsvFromSource(dataset.dataset_csv_raw) ?? dataset.dataset_csv_raw;
+  } else if (
+    typeof schemaInfo?.dataset_csv_raw === "string" &&
+    schemaInfo.dataset_csv_raw.trim().length > 0
+  ) {
+    csvRaw = extractCsvFromSource(schemaInfo.dataset_csv_raw) ?? schemaInfo.dataset_csv_raw;
+  }
+
+  let rawRows: unknown[] = [];
+  if (Array.isArray(dataset.data) && dataset.data.length > 0) {
+    rawRows = dataset.data;
+  } else if (
+    schemaInfo &&
+    Array.isArray(schemaInfo.dataset_rows) &&
+    schemaInfo.dataset_rows.length > 0
+  ) {
+    rawRows = schemaInfo.dataset_rows;
+  } else if (csvRaw) {
+    rawRows = parseCsvToObjects(csvRaw);
+  }
+
+  let columns =
+    Array.isArray(dataset.columns) && dataset.columns.length > 0
+      ? dataset.columns.filter((value): value is string => typeof value === "string")
+      : [];
+
+  if (
+    columns.length === 0 &&
+    schemaInfo &&
+    Array.isArray(schemaInfo.dataset_columns) &&
+    schemaInfo.dataset_columns.length > 0
+  ) {
+    columns = schemaInfo.dataset_columns.filter(
+      (value): value is string => typeof value === "string",
+    );
+  }
+
+  let objectRows: Record<string, unknown>[] = [];
+
+  if (rawRows.length > 0) {
+    const sample = rawRows[0];
+    if (sample && typeof sample === "object" && !Array.isArray(sample)) {
+      const typedRows = rawRows as Record<string, unknown>[];
+      const columnSet = new Set(columns);
+      typedRows.forEach((row) => {
+        Object.keys(row).forEach((key) => {
+          if (!columnSet.has(key)) {
+            columnSet.add(key);
+          }
+        });
+      });
+      columns = Array.from(columnSet);
+      objectRows = typedRows.map((row) => {
+        const normalized: Record<string, unknown> = {};
+        columns.forEach((column) => {
+          normalized[column] = column in row ? row[column] : null;
+        });
+        return normalized;
+      });
+    } else if (Array.isArray(sample)) {
+      const arrayRows = rawRows as unknown[][];
+      const maxLength = arrayRows.reduce(
+        (max, row) => (Array.isArray(row) ? Math.max(max, row.length) : max),
+        columns.length,
+      );
+      for (let idx = 0; idx < maxLength; idx++) {
+        if (!columns[idx]) {
+          columns[idx] = `column_${idx + 1}`;
+        }
+      }
+      objectRows = arrayRows.map((row) => {
+        const normalized: Record<string, unknown> = {};
+        columns.forEach((column, idx) => {
+          normalized[column] = Array.isArray(row) ? row[idx] ?? null : null;
+        });
+        return normalized;
+      });
+    } else {
+      const fallbackColumn = columns[0] || "value";
+      if (!columns.length) {
+        columns = [fallbackColumn];
+      }
+      objectRows = rawRows.map((value) => ({ [fallbackColumn]: value }));
+    }
+  }
+
+  const previewRows = objectRows.slice(0, 20).map((row) => columns.map((column) => row[column] ?? null));
+
+  const pythonVariable = sanitizePythonIdentifier(
+    dataset.table_name ||
+      schemaInfo?.dataset_table_name ||
+      schemaInfo?.table_name ||
+      dataset.name ||
+      `dataset_${index + 1}`,
+  );
+
+  return {
+    id: dataset.id,
+    name: dataset.name,
+    description: dataset.description,
+    columns,
+    objectRows,
+    previewRows,
+    pythonVariable,
+    rowCount: objectRows.length,
+    datasetCsv: csvRaw,
+    loadError:
+      objectRows.length === 0
+        ? csvRaw
+          ? "Dataset CSV could not be parsed."
+          : "No structured rows available for this dataset."
+        : undefined,
+  };
 };
 
 const inferTableNameFromSql = (value?: string | null): string | undefined => {
@@ -310,10 +913,15 @@ const normalizeSectionExerciseQuestion = (
       ? rawId
       : `question-${fallbackIndex ?? 0}`;
 
-  const rawText = typeof question?.text === "string" ? question.text.trim() : "";
+  const rawText = typeof question?.text === "string" ? question.text : "";
   const fallbackText =
-    typeof question?.question_text === "string" ? question.question_text.trim() : "";
-  const normalizedText = rawText || fallbackText || "";
+    typeof question?.question_text === "string" ? question.question_text : "";
+  const normalizedText =
+    rawText && rawText.trim().length > 0
+      ? rawText
+      : fallbackText && fallbackText.trim().length > 0
+      ? fallbackText
+      : rawText || fallbackText || "";
 
   const rawType =
     typeof question?.question_type === "string" && question.question_type.trim()
@@ -345,12 +953,15 @@ const normalizeSectionExerciseQuestion = (
       ? fallbackIndex
       : 0;
 
+  const datasetType = normalizedType;
+
   return {
     ...question,
     id: normalizedId,
-    dataset: normalizeCreationSql(question?.dataset),
+    dataset: normalizeCreationSql(question?.dataset, { datasetType }),
     creation_sql: normalizeCreationSql(
       question?.creation_sql ?? question?.dataset ?? question?.sql,
+      { datasetType },
     ),
     text: normalizedText,
     question_text: normalizedText,
@@ -361,6 +972,69 @@ const normalizeSectionExerciseQuestion = (
   };
 };
 
+
+const resolveQuestionTextPreservingFormatting = (...sources: Array<unknown>): string => {
+  for (const source of sources) {
+    if (typeof source === "string" && source.trim().length > 0) {
+      return source;
+    }
+  }
+
+  for (const source of sources) {
+    if (typeof source === "string") {
+      return source;
+    }
+  }
+
+  return "";
+};
+
+const normalizeAdaptiveQuestion = <T extends Record<string, unknown> | null | undefined>(
+  question: T,
+): T => {
+  if (!question || typeof question !== "object") {
+    return question;
+  }
+
+  const normalizedText = resolveQuestionTextPreservingFormatting(
+    (question as Record<string, unknown>).text,
+    (question as Record<string, unknown>).question_text,
+    (question as Record<string, unknown>).prompt,
+    (question as Record<string, unknown>).content,
+  );
+
+  const result = {
+    ...question,
+  } as Record<string, unknown>;
+
+  if (typeof (question as Record<string, unknown>).text === "string") {
+    const textValue = (question as Record<string, unknown>).text as string;
+    result.text = textValue.trim().length > 0 ? textValue : normalizedText;
+  } else if (normalizedText) {
+    result.text = normalizedText;
+  }
+
+  result.question_text = normalizedText;
+
+  return result as T;
+};
+
+const normalizeAdaptiveSummary = (summary: any) => {
+  if (!summary || typeof summary !== "object") {
+    return summary;
+  }
+
+  const normalizedResponses = Array.isArray(summary.responses)
+    ? summary.responses.map((response: any) => normalizeAdaptiveQuestion(response))
+    : summary.responses;
+
+  return {
+    ...summary,
+    current_question: normalizeAdaptiveQuestion(summary.current_question),
+    next_question: normalizeAdaptiveQuestion(summary.next_question),
+    responses: normalizedResponses,
+  };
+};
 
 const FALLBACK_SOURCES: string[] = [
   "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
@@ -534,7 +1208,7 @@ export function SubjectLearningInterface({
     [subjectModules]
   );
 
-  console.log("All Sections:", allSections);
+  // console.log("All Sections:", allSections);
 
   const getModuleIdentifier = useCallback((module: Module | undefined) => {
     if (!module) return undefined;
@@ -763,16 +1437,87 @@ export function SubjectLearningInterface({
   const [duckDbTables, setDuckDbTables] = useState<string[]>([]);
   const [duckDbDatasetTables, setDuckDbDatasetTables] = useState<Record<string, string[]>>({});
 
+  // Python execution state
+  const pyodide = usePyodide();
+  const {
+    isReady: isPyodideReady,
+    isLoading: isPyodideLoading,
+    error: pyodideError,
+    executeCode: executePythonCode,
+    loadDataFrame: loadPyodideDataFrame,
+  } = pyodide;
+  const [isExecutingPython, setIsExecutingPython] = useState(false);
+  const [pythonOutput, setPythonOutput] = useState<string>('');
+  const [pythonError, setPythonError] = useState<string>('');
+
   // Dataset state
   const [exerciseDatasets, setExerciseDatasets] = useState<{ [exerciseId: string]: any[] }>({});
   const [loadingExerciseDatasets, setLoadingExerciseDatasets] = useState<Record<string, boolean>>({});
-  const [questionDataset, setQuestionDataset] = useState<any>(null);
+  const [questionDataset, setQuestionDataset] = useState<QuestionDatasetRecord | null>(null);
+  const [questionDatasetCache, setQuestionDatasetCache] = useState<Record<string, QuestionDatasetRecord | null>>({});
   const [loadingDataset, setLoadingDataset] = useState(false);
   const [questionCompletionStatus, setQuestionCompletionStatus] = useState<Record<string, "pending" | "completed">>({});
   const [activeDatasetId, setActiveDatasetId] = useState<string | null>(null);
   const [datasetPreview, setDatasetPreview] = useState<DatasetPreview | null>(null);
   const [loadingDatasetPreview, setLoadingDatasetPreview] = useState(false);
   const [datasetPreviewError, setDatasetPreviewError] = useState<string | null>(null);
+  const [downloadingDataset, setDownloadingDataset] = useState(false);
+  const [pythonDatasetStatus, setPythonDatasetStatus] = useState<Record<string, PythonDatasetLoadState>>({});
+
+  const downloadDatasetPreview = useCallback(
+    async ({
+      fileName,
+      worksheetName,
+    }: {
+      fileName?: string;
+      worksheetName?: string;
+    }) => {
+      if (!datasetPreview || datasetPreview.columns.length === 0) {
+        return;
+      }
+
+      const sanitizeForFile = (value: string) =>
+        value.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim();
+
+      const safeWorksheetName = sanitizeForFile(worksheetName ?? "Dataset").slice(0, 31) || "Sheet1";
+      const safeFileName = (sanitizeForFile(fileName ?? "dataset") || "dataset").slice(0, 120);
+
+      const normalizeCellForExport = (value: unknown) => {
+        if (value === null || value === undefined) {
+          return "";
+        }
+        if (typeof value === "bigint") {
+          return value.toString();
+        }
+        if (typeof value === "object") {
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        }
+        return value;
+      };
+
+      try {
+        setDownloadingDataset(true);
+        const XLSX = await import("xlsx");
+        const worksheetData = [
+          datasetPreview.columns,
+          ...datasetPreview.rows.map((row) => row.map((cell) => normalizeCellForExport(cell))),
+        ];
+        const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, safeWorksheetName);
+        XLSX.writeFile(workbook, `${safeFileName}.xlsx`);
+      } catch (error) {
+        console.error("Failed to export dataset preview", error);
+      } finally {
+        setDownloadingDataset(false);
+      }
+    },
+    [datasetPreview],
+  );
   const [isContentExpanded, setIsContentExpanded] = useState(false);
   const toggleContentExpanded = useCallback(() => {
     setIsContentExpanded((prev) => !prev);
@@ -863,6 +1608,8 @@ export function SubjectLearningInterface({
     return typeof rawType === "string" ? rawType.toLowerCase() : null;
   }, [selectedQuestionForPopup]);
 
+  const isSpreadsheetQuestion = selectedQuestionType === "google_sheets";
+
 
   // Function to fetch exercise datasets
   const fetchExerciseDatasets = useCallback(async (exerciseId: string) => {
@@ -873,10 +1620,31 @@ export function SubjectLearningInterface({
       const response = await getExerciseDatasetsAction(exerciseId) as any;
       if (response && response.data) {
         const normalizedDatasets = Array.isArray(response.data)
-          ? response.data.map((dataset: any) => ({
-              ...dataset,
-              creation_sql: normalizeCreationSql(dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset),
-            }))
+          ? response.data.map((dataset: any) => {
+              const datasetType = resolveDatasetLanguage(
+                dataset?.subject_type,
+                dataset?.type,
+                dataset?.question_type,
+              );
+              const normalized = normalizeQuestionDataset(dataset, {
+                questionId:
+                  typeof dataset?.question_id === "string" || typeof dataset?.question_id === "number"
+                    ? String(dataset.question_id)
+                    : undefined,
+                questionTitle: dataset?.name,
+                subjectType: datasetType,
+              });
+              if (normalized) {
+                return normalized;
+              }
+              return {
+                ...dataset,
+                creation_sql: normalizeCreationSql(
+                  dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset,
+                  { datasetType },
+                ),
+              };
+            })
           : [];
         setExerciseDatasets(prev => ({
           ...prev,
@@ -937,25 +1705,70 @@ export function SubjectLearningInterface({
       // console.log('[FETCH EXERCISES DEBUG] API response:', response);
       if (response && response.data) {
         const normalizedExercises = Array.isArray(response.data)
-          ? response.data.map((exercise: any) => ({
-              ...exercise,
-              // Map 'data' field from backend to 'dataset' field expected by frontend
-              dataset: normalizeCreationSql(exercise?.data),
-              section_exercise_questions: Array.isArray(exercise?.section_exercise_questions)
-                ? exercise.section_exercise_questions.map((question: any, index: number) =>
-                    normalizeSectionExerciseQuestion(question, {
-                      exerciseId: exercise?.id ? String(exercise.id) : undefined,
-                      fallbackIndex: index,
-                    }),
-                  )
-                : exercise?.section_exercise_questions,
-              context: exercise?.context
-                ? {
-                    ...exercise.context,
-                    data_creation_sql: normalizeCreationSql(exercise.context.data_creation_sql),
-                  }
-                : exercise?.context,
-            }))
+          ? response.data.map((exercise: any) => {
+              const exerciseDatasetType = resolveDatasetLanguage(
+                exercise?.subject_type,
+                exercise?.exercise_type,
+                exercise?.practice_type,
+                exercise?.type,
+              );
+              const normalizedExerciseDataset = normalizeCreationSql(exercise?.data, {
+                datasetType: exerciseDatasetType,
+              });
+              const normalizedContext = exercise?.context
+                ? (() => {
+                    const contextCreationSql = normalizeCreationSql(
+                      exercise.context.data_creation_sql,
+                      { datasetType: exerciseDatasetType },
+                    );
+                    const contextCsv =
+                      typeof exercise.context.dataset_csv_raw === "string" &&
+                      exercise.context.dataset_csv_raw.trim().length > 0
+                        ? extractCsvFromSource(exercise.context.dataset_csv_raw) ??
+                          exercise.context.dataset_csv_raw
+                        : extractCsvFromSource(contextCreationSql);
+                    const contextRows =
+                      contextCsv && contextCsv.trim().length > 0
+                        ? parseCsvToObjects(contextCsv)
+                        : [];
+                    const contextColumns =
+                      Array.isArray(exercise.context.dataset_columns) &&
+                      exercise.context.dataset_columns.length > 0
+                        ? exercise.context.dataset_columns
+                        : contextRows.length > 0
+                        ? Object.keys(contextRows[0])
+                        : exercise.context.expected_cols_list?.[0] || [];
+                    const contextPayload =
+                      exerciseDatasetType === "google_sheets"
+                        ? contextCsv ?? contextCreationSql ?? ""
+                        : contextCreationSql ?? "";
+                    return {
+                      ...exercise.context,
+                      data_creation_sql: contextPayload,
+                      dataset_csv_raw: contextCsv,
+                      dataset_columns: contextColumns,
+                    };
+                  })()
+                : exercise?.context;
+              const datasetPayload =
+                exerciseDatasetType === "google_sheets"
+                  ? normalizedContext?.dataset_csv_raw ?? normalizedExerciseDataset ?? ""
+                  : normalizedExerciseDataset ?? "";
+              return {
+                ...exercise,
+                // Map 'data' field from backend to 'dataset' field expected by frontend
+                dataset: datasetPayload,
+                section_exercise_questions: Array.isArray(exercise?.section_exercise_questions)
+                  ? exercise.section_exercise_questions.map((question: any, index: number) =>
+                      normalizeSectionExerciseQuestion(question, {
+                        exerciseId: exercise?.id ? String(exercise.id) : undefined,
+                        fallbackIndex: index,
+                      }),
+                    )
+                  : exercise?.section_exercise_questions,
+                context: normalizedContext,
+              };
+            })
           : [];
 
         // console.log('[FETCH EXERCISES DEBUG] Exercises data:', normalizedExercises.map((e: any) => ({
@@ -1010,55 +1823,79 @@ export function SubjectLearningInterface({
     return 'sql';
   }, []);
 
-  const fetchQuestionDataset = useCallback(async (questionId: string) => {
-    if (!questionId) return;
+  const fetchQuestionDataset = useCallback(
+    async (
+      questionId: string,
+      context?: { questionTitle?: string; questionType?: string | null },
+    ) => {
+      if (!questionId) return;
 
-    setLoadingDataset(true);
-    try {
-      const response = await fetch(`/api/v1/sections/questions/${questionId}/dataset`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (response.status === 404) {
-        // No dataset persisted for this question yet (common for freshly-generated content)
-        setQuestionDataset(null);
+      const cached = questionDatasetCache[questionId];
+      if (cached !== undefined) {
+        setQuestionDataset(cached);
         return;
       }
 
-      if (response.ok) {
-        const result = await response.json();
-        const normalizedDataset = result?.data
-          ? {
-              ...result.data,
-              creation_sql: normalizeCreationSql(result.data.creation_sql ?? result.data.sql),
-              dataset:
-                typeof result.data.dataset === "string"
-                  ? normalizeCreationSql(result.data.dataset)
-                  : result.data.dataset,
-              schema_info: result.data.schema_info
-                ? {
-                    ...result.data.schema_info,
-                    creation_sql: normalizeCreationSql(result.data.schema_info.creation_sql),
-                  }
-                : result.data.schema_info,
-            }
-          : null;
-        setQuestionDataset(normalizedDataset);
-        // console.log('Fetched dataset for question:', questionId, normalizedDataset);
-      } else {
-        console.error('Failed to fetch dataset:', response.statusText);
+      setLoadingDataset(true);
+      try {
+        const response = await fetch(`/api/v1/sections/questions/${questionId}/dataset`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (response.status === 404) {
+          setQuestionDataset(null);
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: null,
+          }));
+          return;
+        }
+
+        if (response.ok) {
+          const result = await response.json();
+          const normalizedDataset = normalizeQuestionDataset(result?.data, {
+            questionId,
+            questionTitle: context?.questionTitle,
+            subjectType: context?.questionType,
+          });
+          setQuestionDataset(normalizedDataset);
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: normalizedDataset,
+          }));
+        } else {
+          let errorDetails = "";
+          try {
+            errorDetails = (await response.text())?.trim();
+          } catch (readError) {
+            console.warn('Failed to read dataset error response:', readError);
+          }
+          console.warn(
+            `Failed to fetch dataset for question ${questionId}: ${response.status} ${response.statusText}`,
+            errorDetails,
+          );
+          setQuestionDataset(null);
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: null,
+          }));
+        }
+      } catch (error) {
+        console.error('Error fetching dataset:', error);
         setQuestionDataset(null);
+        setQuestionDatasetCache((prev) => ({
+          ...prev,
+          [questionId]: null,
+        }));
+      } finally {
+        setLoadingDataset(false);
       }
-    } catch (error) {
-      console.error('Error fetching dataset:', error);
-      setQuestionDataset(null);
-    } finally {
-      setLoadingDataset(false);
-    }
-  }, []);
+    },
+    [questionDatasetCache, setQuestionDatasetCache],
+  );
 
   // Generation functions with progressive loading
   const handleGenerateExercise = useCallback(async (section: Section) => {
@@ -1113,10 +1950,32 @@ export function SubjectLearningInterface({
           text: question.question_text || (rawQuestions?.[index]?.business_question ?? ''),
         }));
 
-        const normalizedCreationSql = normalizeCreationSql(context.data_creation_sql);
+        const normalizedCreationSql = normalizeCreationSql(context.data_creation_sql, {
+          datasetType: normalizedQuestionType,
+        });
+        const normalizedDatasetCsv =
+          typeof context.dataset_csv_raw === "string" && context.dataset_csv_raw.trim().length > 0
+            ? extractCsvFromSource(context.dataset_csv_raw) ?? context.dataset_csv_raw
+            : extractCsvFromSource(normalizedCreationSql);
+        const datasetRows =
+          normalizedDatasetCsv && normalizedDatasetCsv.trim().length > 0
+            ? parseCsvToObjects(normalizedDatasetCsv)
+            : [];
+        const datasetColumns =
+          Array.isArray(context.dataset_columns) && context.dataset_columns.length > 0
+            ? context.dataset_columns
+            : datasetRows.length > 0
+            ? Object.keys(datasetRows[0])
+            : context.expected_cols_list?.[0] || [];
+        const datasetPayload =
+          normalizedQuestionType === "google_sheets"
+            ? normalizedDatasetCsv ?? normalizedCreationSql ?? ""
+            : normalizedCreationSql ?? "";
         const normalizedContext = {
           ...context,
-          data_creation_sql: normalizedCreationSql,
+          data_creation_sql: datasetPayload,
+          dataset_csv_raw: normalizedDatasetCsv,
+          dataset_columns: datasetColumns,
         };
 
         const derivedQuestions =
@@ -1133,7 +1992,7 @@ export function SubjectLearningInterface({
                 solution: '',
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
-                dataset: normalizedCreationSql,
+                dataset: datasetPayload,
               }));
 
         const updatedExercise = {
@@ -1144,7 +2003,7 @@ export function SubjectLearningInterface({
         const normalizedExerciseEntry = {
           ...updatedExercise,
           section_exercise_questions: derivedQuestions,
-          dataset: normalizedCreationSql,
+          dataset: datasetPayload,
           context: normalizedContext,
         };
 
@@ -1170,8 +2029,11 @@ export function SubjectLearningInterface({
               id: 'generated_dataset',
               name: updatedExercise.title || 'Generated Dataset',
               description: context.dataset_description,
-              columns: context.expected_cols_list?.[0] || [],
-              creation_sql: normalizedCreationSql,
+              columns: datasetColumns,
+              creation_sql: datasetPayload,
+              dataset_csv_raw: normalizedDatasetCsv,
+              data: datasetRows,
+              data_preview: datasetRows.slice(0, 20),
               data_dictionary: context.data_dictionary,
             },
           ],
@@ -1192,7 +2054,7 @@ export function SubjectLearningInterface({
               exerciseId: updatedExercise.id ? String(updatedExercise.id) : null,
               exerciseTitle: updatedExercise.title,
               exerciseDescription: updatedExercise.description,
-              exerciseDataset: normalizedCreationSql,
+              exerciseDataset: datasetPayload,
             },
             0,
           );
@@ -1247,7 +2109,7 @@ export function SubjectLearningInterface({
 
       if (result && result.session && result.firstQuestion && !result.stop) {
         setAdaptiveQuizSession(result.session);
-        setCurrentAdaptiveQuestion(result.firstQuestion);
+        setCurrentAdaptiveQuestion(normalizeAdaptiveQuestion(result.firstQuestion));
         setIsAdaptiveQuizMode(true);
         setAdaptiveQuizCompleted(false);
         setAdaptiveQuizAnswer('');
@@ -1303,10 +2165,10 @@ export function SubjectLearningInterface({
 
         const summaryResult = await getAdaptiveQuizSummaryAction(adaptiveQuizSession.id);
         if (summaryResult) {
-          setAdaptiveQuizSummary(summaryResult);
+          setAdaptiveQuizSummary(normalizeAdaptiveSummary(summaryResult));
         }
       } else if (result?.question) {
-        setPendingAdaptiveQuestion(result.question);
+        setPendingAdaptiveQuestion(normalizeAdaptiveQuestion(result.question));
       }
     } catch (error) {
       console.error('Failed to submit adaptive quiz answer:', error);
@@ -1326,7 +2188,7 @@ export function SubjectLearningInterface({
       return;
     }
 
-    setCurrentAdaptiveQuestion(pendingAdaptiveQuestion);
+    setCurrentAdaptiveQuestion(normalizeAdaptiveQuestion(pendingAdaptiveQuestion));
     setPendingAdaptiveQuestion(null);
     setAdaptiveQuizAnswer('');
     setShowAdaptiveExplanation(false);
@@ -1372,9 +2234,16 @@ export function SubjectLearningInterface({
         }),
       );
 
+      const exerciseDatasetType = resolveDatasetLanguage(
+        exercise?.subject_type,
+        exercise?.exercise_type,
+        exercise?.practice_type,
+        exercise?.type,
+      );
+
       const normalizedExercise = {
         ...exercise,
-        dataset: normalizeCreationSql(exercise?.dataset),
+        dataset: normalizeCreationSql(exercise?.dataset, { datasetType: exerciseDatasetType }),
         section_exercise_questions: normalizedQuestions,
       };
 
@@ -1389,12 +2258,21 @@ export function SubjectLearningInterface({
         const response = (await getExerciseDatasetsAction(exercise.id)) as any;
         if (response && response.data) {
           const normalizedDatasets = Array.isArray(response.data)
-            ? response.data.map((dataset: any) => ({
-                ...dataset,
-                creation_sql: normalizeCreationSql(
-                  dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset,
-                ),
-              }))
+            ? response.data.map((dataset: any) => {
+                const datasetType = resolveDatasetLanguage(
+                  dataset?.subject_type,
+                  dataset?.type,
+                  dataset?.question_type,
+                  exerciseDatasetType,
+                );
+                return {
+                  ...dataset,
+                  creation_sql: normalizeCreationSql(
+                    dataset?.creation_sql ?? dataset?.sql ?? dataset?.dataset,
+                    { datasetType },
+                  ),
+                };
+              })
             : [];
           setPracticeDatasets(normalizedDatasets);
         } else {
@@ -1637,7 +2515,7 @@ export function SubjectLearningInterface({
         }
 
         if (prev.kind === "exercise") {
-          console.log(selectedSection);
+          // console.log(selectedSection);
           const exercises = getExercises(selectedSection);
 
           if (exercises.some((exercise) => exercise.id === prev.resourceId)) return prev;
@@ -1709,7 +2587,119 @@ export function SubjectLearningInterface({
   // Handle quiz completion in runner mode
   const handleQuizComplete = useCallback(async (sectionId: string, score: number, answers: Record<string, string[]>) => {
     const stopThreshold = 80; // Stop if score >= 80%
-    const stop = score >= stopThreshold;
+
+    const sectionQuizList = sectionQuizzes[sectionId] || [];
+    const candidateQuizzes: Quiz[] = [];
+
+    if (loadedQuiz && (!selectedResource || selectedResource.sectionId === sectionId)) {
+      candidateQuizzes.push(loadedQuiz);
+    }
+
+    if (quizSession?.quizzes?.length) {
+      candidateQuizzes.push(...quizSession.quizzes);
+    }
+
+    if (sectionQuizList.length) {
+      candidateQuizzes.push(...sectionQuizList);
+    }
+
+    const preferredQuizIds = [
+      quizSession?.currentQuizId,
+      selectedResource?.kind === "quiz" && selectedResource.sectionId === sectionId ? selectedResource.resourceId : undefined,
+    ].filter((value): value is string => Boolean(value));
+
+    let quizQuestions: QuizQuestion[] = [];
+
+    for (const quizId of preferredQuizIds) {
+      const matchedQuiz = candidateQuizzes.find((quiz) => quiz.id === quizId);
+      if (matchedQuiz?.quiz_questions?.length) {
+        quizQuestions = matchedQuiz.quiz_questions;
+        break;
+      }
+    }
+
+    if (!quizQuestions.length) {
+      const fallbackQuiz = candidateQuizzes.find((quiz) => quiz.quiz_questions && quiz.quiz_questions.length);
+      if (fallbackQuiz?.quiz_questions) {
+        quizQuestions = fallbackQuiz.quiz_questions;
+      }
+    }
+
+    const normalizeDifficulty = (value: unknown): "hard" | "medium" | "easy" | null => {
+      if (typeof value !== "string") return null;
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) return null;
+      if (["hard", "advanced", "challenging"].includes(normalized)) return "hard";
+      if (["medium", "moderate", "intermediate"].includes(normalized)) return "medium";
+      if (["easy", "beginner", "simple"].includes(normalized)) return "easy";
+      return null;
+    };
+
+    const getQuestionDifficulty = (question: QuizQuestion): "hard" | "medium" | "easy" | null => {
+      const data = question as Record<string, any>;
+      const candidates = [
+        data?.difficulty,
+        data?.difficulty_level,
+        data?.question_difficulty,
+        data?.metadata?.difficulty,
+        data?.meta?.difficulty,
+        data?.content?.difficulty,
+        data?.quiz_metadata?.difficulty,
+        data?.question_metadata?.difficulty,
+      ];
+
+      for (const candidate of candidates) {
+        const normalized = normalizeDifficulty(candidate);
+        if (normalized) {
+          return normalized;
+        }
+      }
+
+      return null;
+    };
+
+    const normalizeAnswer = (value: unknown): string => (typeof value === "string" ? value.trim().toLowerCase() : "");
+
+    let hardCorrectCount = 0;
+    let mediumCorrectCount = 0;
+
+    quizQuestions.forEach((question, index) => {
+      const answerKey = question.id ?? index.toString();
+      const userAnswer = answers[answerKey];
+      if (!userAnswer || userAnswer.length === 0) {
+        return;
+      }
+
+      const normalizedUserAnswer = normalizeAnswer(userAnswer[0]);
+      if (!normalizedUserAnswer) {
+        return;
+      }
+
+      const correctOptions = (question.quiz_options || []).filter((option) => option?.correct);
+      if (correctOptions.length === 0) {
+        return;
+      }
+
+      const isCorrect = correctOptions.some(
+        (option) => normalizeAnswer(option?.text) === normalizedUserAnswer,
+      );
+
+      if (!isCorrect) {
+        return;
+      }
+
+      const difficulty = getQuestionDifficulty(question);
+      if (difficulty === "hard") {
+        hardCorrectCount += 1;
+      } else if (difficulty === "medium") {
+        mediumCorrectCount += 1;
+      }
+    });
+
+    const stop =
+      score >= stopThreshold ||
+      hardCorrectCount >= 5 ||
+      mediumCorrectCount >= 6;
 
     // Update current quiz result locally
     const currentSession = quizSession;
@@ -1780,7 +2770,7 @@ export function SubjectLearningInterface({
       // console.error('Failed to generate next quiz:', error);
       setIsQuizRunnerMode(false);
     }
-  }, [courseId, subjectId, sectionQuizzes, allSections, quizSession]);
+  }, [courseId, subjectId, sectionQuizzes, allSections, quizSession, loadedQuiz, selectedResource]);
 
   const lectureSelection = useMemo(() => {
 
@@ -1929,8 +2919,41 @@ export function SubjectLearningInterface({
         return;
       }
 
+      const questionId =
+        typeof (question as { id?: unknown })?.id === "string" || typeof (question as { id?: unknown })?.id === "number"
+          ? String((question as { id?: string | number }).id)
+          : undefined;
+      const questionTitle =
+        (typeof (question as { question_text?: string })?.question_text === "string" &&
+        (question as { question_text?: string }).question_text?.trim())
+          ? (question as { question_text?: string }).question_text
+          : (typeof (question as { text?: string })?.text === "string" &&
+            (question as { text?: string }).text?.trim())
+          ? (question as { text?: string }).text
+          : exerciseContext?.title;
+
+      const rawQuestionType =
+        typeof (question as { question_type?: string })?.question_type === "string" &&
+        (question as { question_type?: string }).question_type?.trim()
+          ? (question as { question_type?: string }).question_type
+          : typeof (question as { type?: string })?.type === "string" &&
+            (question as { type?: string }).type?.trim()
+          ? (question as { type?: string }).type
+          : undefined;
+      const questionType =
+        typeof rawQuestionType === "string" && rawQuestionType.trim()
+          ? rawQuestionType.trim().toLowerCase()
+          : undefined;
+
+      const exerciseDatasetType = resolveDatasetLanguage(
+        questionType,
+        exerciseContext?.practice_type,
+        exerciseContext?.exercise_type,
+        exerciseContext?.subject_type,
+      );
       const exerciseDatasetSql = normalizeCreationSql(
         (question as any)?.exerciseDataset ?? exerciseContext.dataset,
+        { datasetType: exerciseDatasetType },
       );
 
       setSelectedQuestionForPopup({
@@ -1951,22 +2974,47 @@ export function SubjectLearningInterface({
             : typeof (question as any)?.text === "string"
             ? (question as any).text
             : "",
-        question_type:
-          typeof (question as any)?.question_type === "string" && (question as any).question_type.trim()
-            ? (question as any).question_type.toLowerCase()
-            : typeof (question as any)?.type === "string" && (question as any).type.trim()
-            ? (question as any).type.toLowerCase()
-            : "sql",
+        question_type: questionType ?? "sql",
       });
       setSqlCode('');
       setSqlResults([]);
       setSqlError('');
-      setQuestionDataset(null);
-      if (question.id) {
-        fetchQuestionDataset(question.id);
+
+      const cachedDataset = questionId ? questionDatasetCache[questionId] : undefined;
+      const inlineDataset = normalizeQuestionDataset((question as { dataset?: unknown }).dataset, {
+        questionId,
+        questionTitle,
+        subjectType: questionType,
+      });
+
+      if (inlineDataset) {
+        setQuestionDataset(inlineDataset);
+        if (questionId) {
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: inlineDataset,
+          }));
+        }
+        if (
+          questionId &&
+          cachedDataset === undefined &&
+          (!inlineDataset.creation_sql ||
+            !Array.isArray(inlineDataset.data) ||
+            inlineDataset.data.length === 0) &&
+          !inlineDataset.dataset_csv_raw
+        ) {
+          fetchQuestionDataset(questionId, { questionTitle, questionType });
+        }
+      } else if (cachedDataset !== undefined) {
+        setQuestionDataset(cachedDataset);
+      } else {
+        setQuestionDataset(null);
+        if (questionId) {
+          fetchQuestionDataset(questionId, { questionTitle, questionType });
+        }
       }
     },
-    [activeExercise, fetchQuestionDataset],
+    [activeExercise, fetchQuestionDataset, questionDatasetCache, setQuestionDatasetCache],
   );
 
   const markQuestionCompleted = useCallback(
@@ -2070,6 +3118,73 @@ export function SubjectLearningInterface({
     ],
   );
 
+  // Python execution handler
+  const handleExecutePython = useCallback(
+    async (code: string) => {
+      if (!code.trim() || isExecutingPython) {
+        return;
+      }
+
+      if (selectedQuestionType && selectedQuestionType !== "python") {
+        setPythonError("Python execution is only available for Python questions.");
+        return;
+      }
+
+      if (!isPyodideReady) {
+        setPythonError("Python runtime is still initializing. Please wait a moment and try again.");
+        return;
+      }
+
+      setIsExecutingPython(true);
+      setPythonError("");
+      setPythonOutput("");
+
+      try {
+        const result = await executePythonCode(code);
+        if (!result.success) {
+          throw new Error(result.error || "Python execution failed");
+        }
+
+        setPythonOutput(result.output || "Code executed successfully (no output)");
+        markQuestionCompleted(selectedQuestionForPopup);
+      } catch (error) {
+        console.error("Python execution error:", error);
+        setPythonError(error instanceof Error ? error.message : "An error occurred while executing Python");
+      } finally {
+        setIsExecutingPython(false);
+      }
+    },
+    [
+      executePythonCode,
+      isPyodideReady,
+      isExecutingPython,
+      markQuestionCompleted,
+      selectedQuestionForPopup,
+      selectedQuestionType,
+    ],
+  );
+
+  // Generic code execution handler that routes to the appropriate executor
+  const handleExecuteCode = useCallback(
+    async (code: string) => {
+      if (!code.trim()) {
+        return;
+      }
+
+      const questionType = selectedQuestionType?.toLowerCase();
+
+      if (questionType === "sql") {
+        await handleExecuteSQL(code);
+      } else if (questionType === "python") {
+        await handleExecutePython(code);
+      } else {
+        // For other question types, show an appropriate message
+        setSqlError(`Code execution is not yet supported for ${questionType || 'this'} question type.`);
+      }
+    },
+    [selectedQuestionType, handleExecuteSQL, handleExecutePython],
+  );
+
   const handleSelectExercise = useCallback(
     (sectionId: string, exercise: any) => {
       // console.log('[HANDLE SELECT EXERCISE DEBUG] Called with:', {
@@ -2114,13 +3229,21 @@ export function SubjectLearningInterface({
       if (questionList.length > 0) {
         const firstQuestion = questionList[0];
         // console.log('[HANDLE SELECT EXERCISE DEBUG] Setting first question as selected');
+        const exerciseDatasetType = resolveDatasetLanguage(
+          exercise?.subject_type,
+          exercise?.exercise_type,
+          exercise?.practice_type,
+          exercise?.type,
+        );
         setActiveExerciseQuestion(
           {
             ...firstQuestion,
             exerciseId: exercise.id ? String(exercise.id) : null,
             exerciseTitle: exercise.title,
             exerciseDescription: exercise.description,
-            exerciseDataset: normalizeCreationSql(exercise.dataset),
+            exerciseDataset: normalizeCreationSql(exercise.dataset, {
+              datasetType: exerciseDatasetType,
+            }),
           },
           0,
           exercise,
@@ -2206,6 +3329,115 @@ export function SubjectLearningInterface({
     return exerciseDatasets[activeExercise.id] || [];
   }, [activeExercise?.id, exerciseDatasets]);
 
+  const spreadsheetDatasets = useMemo(
+    () =>
+      isSpreadsheetQuestion
+        ? (() => {
+            const datasets: Array<{
+              id: string;
+              name: string;
+              description?: string;
+              preview: DatasetPreview | null;
+            }> = [];
+            const seen = new Set<string>();
+
+            const pushDataset = (
+              rawDataset: unknown,
+              meta: {
+                id?: string | null;
+                name?: string | null;
+                description?: string | null;
+              } = {},
+            ) => {
+              if (!rawDataset) {
+                return;
+              }
+
+              const preview = buildDatasetPreviewFromRecord(rawDataset);
+              const isObject =
+                rawDataset && typeof rawDataset === "object" && !Array.isArray(rawDataset);
+
+              const candidateId =
+                (typeof meta.id === "string" && meta.id.trim()) ||
+                (isObject &&
+                  typeof (rawDataset as Record<string, unknown>).id === "string" &&
+                  (rawDataset as Record<string, unknown>).id!.trim()) ||
+                (isObject &&
+                  typeof (rawDataset as Record<string, unknown>).table_name === "string" &&
+                  (rawDataset as Record<string, unknown>).table_name!.trim()) ||
+                undefined;
+
+              let datasetId = candidateId ?? `dataset-${datasets.length}`;
+              while (seen.has(datasetId)) {
+                datasetId = `${datasetId}-${datasets.length}`;
+              }
+              seen.add(datasetId);
+
+              const datasetName =
+                (typeof meta.name === "string" && meta.name.trim()) ||
+                (isObject &&
+                  typeof (rawDataset as Record<string, unknown>).name === "string" &&
+                  (rawDataset as Record<string, unknown>).name!.trim()) ||
+                (isObject &&
+                  typeof (rawDataset as Record<string, unknown>).table_name === "string" &&
+                  (rawDataset as Record<string, unknown>).table_name!.trim()) ||
+                undefined;
+
+              const datasetDescription =
+                (typeof meta.description === "string" && meta.description.trim()) ||
+                (isObject &&
+                  typeof (rawDataset as Record<string, unknown>).description === "string" &&
+                  (rawDataset as Record<string, unknown>).description!.trim()) ||
+                undefined;
+
+              datasets.push({
+                id: datasetId,
+                name: datasetName || "Dataset",
+                description: datasetDescription,
+                preview,
+              });
+            };
+
+            if (questionDataset) {
+              pushDataset(questionDataset, {
+                id: questionDataset.id,
+                name: questionDataset.name,
+                description: questionDataset.description,
+              });
+            }
+
+            const inlineDataset =
+              selectedQuestionForPopup &&
+              typeof (selectedQuestionForPopup as any)?.dataset === "object" &&
+              !Array.isArray((selectedQuestionForPopup as any)?.dataset)
+                ? (selectedQuestionForPopup as any).dataset
+                : null;
+
+            if (inlineDataset) {
+              pushDataset(inlineDataset, {
+                id: inlineDataset?.id,
+                name: inlineDataset?.name ?? selectedQuestionForPopup?.exerciseTitle ?? null,
+                description: inlineDataset?.description,
+              });
+            }
+
+            exerciseDatasetList.forEach((dataset: any, index: number) => {
+              pushDataset(dataset, {
+                id:
+                  typeof dataset?.id === "string" || typeof dataset?.id === "number"
+                    ? String(dataset.id)
+                    : `exercise-${index}`,
+                name: dataset?.name,
+                description: dataset?.description,
+              });
+            });
+
+            return datasets;
+          })()
+        : [],
+    [exerciseDatasetList, isSpreadsheetQuestion, questionDataset, selectedQuestionForPopup],
+  );
+
   const availableSqlDatasets = useMemo(() => {
     if (selectedQuestionType !== "sql") {
       return [];
@@ -2267,6 +3499,7 @@ export function SubjectLearningInterface({
         name: selectedQuestionForPopup?.exerciseTitle || "Question Dataset",
         description: "Dataset attached to question",
         creation_sql: inlineQuestionDataset,
+        dataset_csv_raw: extractCsvFromSource(inlineQuestionDataset),
       });
     } else if (inlineQuestionDataset && typeof inlineQuestionDataset === "object") {
       pushDataset({
@@ -2277,6 +3510,10 @@ export function SubjectLearningInterface({
         table_name: inlineQuestionDataset.table_name,
         data: inlineQuestionDataset.data,
         columns: inlineQuestionDataset.columns,
+        dataset_csv_raw:
+          typeof inlineQuestionDataset.dataset_csv_raw === "string"
+            ? extractCsvFromSource(inlineQuestionDataset.dataset_csv_raw) ?? inlineQuestionDataset.dataset_csv_raw
+            : undefined,
         placeholders: inlineQuestionDataset.placeholders,
       });
     }
@@ -2288,6 +3525,7 @@ export function SubjectLearningInterface({
         name: selectedQuestionForPopup?.exerciseTitle || "Exercise Dataset",
         description: "Exercise-level dataset",
         creation_sql: questionExerciseDataset,
+        dataset_csv_raw: extractCsvFromSource(questionExerciseDataset),
       });
     }
 
@@ -2300,6 +3538,8 @@ export function SubjectLearningInterface({
           ? currentExerciseData.context.expected_cols_list.flat()
           : undefined,
         creation_sql: currentExerciseData.context.data_creation_sql,
+        dataset_csv_raw: currentExerciseData.context.dataset_csv_raw,
+        columns: currentExerciseData.context.dataset_columns,
       });
     }
 
@@ -2338,6 +3578,99 @@ export function SubjectLearningInterface({
     activeExercise,
     exerciseDatasetList,
   ]);
+
+  const activeSpreadsheetDataset =
+    isSpreadsheetQuestion && activeDatasetId
+      ? spreadsheetDatasets.find((dataset) => dataset.id === activeDatasetId) ?? null
+      : null;
+
+  const availablePythonDatasets = useMemo(() => {
+    if (selectedQuestionType !== "python") {
+      return [] as PythonDatasetDefinition[];
+    }
+
+    const datasets: PythonDatasetDefinition[] = [];
+    const seen = new Set<string>();
+
+    const pushDataset = (candidate?: PythonDatasetDefinition | null) => {
+      if (!candidate) return;
+      const key =
+        candidate.id ||
+        `${candidate.name || "dataset"}::${
+          Array.isArray(candidate.data) ? candidate.data.length : 0
+        }::${
+          Array.isArray(candidate.columns) ? candidate.columns.join("|") : ""
+        }::${
+          typeof candidate.dataset_csv_raw === "string"
+            ? candidate.dataset_csv_raw.length
+            : 0
+        }`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      datasets.push(candidate);
+    };
+
+    if (questionDataset) {
+      pushDataset({
+        id: `question-python:${questionDataset.id ?? "inline"}`,
+        name: questionDataset.name || "Question Dataset",
+        description: questionDataset.description,
+        data: questionDataset.data,
+        columns: questionDataset.columns,
+        dataset_csv_raw: questionDataset.dataset_csv_raw,
+        schema_info: questionDataset.schema_info,
+        table_name: questionDataset.table_name,
+        source: "question",
+      });
+    }
+
+    const inlineDataset = (selectedQuestionForPopup as any)?.dataset;
+    if (inlineDataset && typeof inlineDataset === "object" && !Array.isArray(inlineDataset)) {
+      pushDataset({
+        id: `question-inline-python:${selectedQuestionForPopup?.id ?? "inline"}`,
+        name:
+          inlineDataset.name ||
+          selectedQuestionForPopup?.exerciseTitle ||
+          "Question Dataset",
+        description: inlineDataset.description,
+        data: Array.isArray(inlineDataset.data) ? inlineDataset.data : undefined,
+        columns: Array.isArray(inlineDataset.columns)
+          ? inlineDataset.columns
+          : undefined,
+        dataset_csv_raw:
+          typeof inlineDataset.dataset_csv_raw === "string"
+            ? inlineDataset.dataset_csv_raw
+            : undefined,
+        schema_info: inlineDataset.schema_info,
+        table_name: inlineDataset.table_name,
+        source: "question-inline",
+      });
+    }
+
+    exerciseDatasetList.forEach((dataset: any, index: number) => {
+      if (dataset?.subject_type && dataset.subject_type !== "python") {
+        return;
+      }
+      pushDataset({
+        id: `exercise-python:${dataset.id ?? index}`,
+        name: dataset.name || `Dataset ${index + 1}`,
+        description: dataset.description,
+        data: Array.isArray(dataset.data) ? dataset.data : undefined,
+        columns: Array.isArray(dataset.columns) ? dataset.columns : undefined,
+        dataset_csv_raw:
+          typeof dataset.dataset_csv_raw === "string"
+            ? dataset.dataset_csv_raw
+            : undefined,
+        schema_info: dataset.schema_info,
+        table_name: dataset.table_name,
+        source: "exercise",
+      });
+    });
+
+    return datasets;
+  }, [selectedQuestionType, questionDataset, selectedQuestionForPopup, exerciseDatasetList]);
 
   const sqlDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
     if (selectedQuestionType !== "sql") {
@@ -2393,33 +3726,116 @@ export function SubjectLearningInterface({
     });
   }, [availableSqlDatasets, duckDbDatasetTables, selectedQuestionType]);
 
+  const pythonDatasetDetails = useMemo(() => {
+    if (selectedQuestionType !== "python") {
+      return {} as Record<string, PythonDatasetDetail>;
+    }
+
+    const detailMap: Record<string, PythonDatasetDetail> = {};
+    availablePythonDatasets.forEach((dataset, index) => {
+      detailMap[dataset.id] = buildPythonDatasetDetail(dataset, index);
+    });
+    return detailMap;
+  }, [availablePythonDatasets, selectedQuestionType]);
+
   useEffect(() => {
-    if (selectedQuestionType !== "sql" || sqlDatasetVariants.length === 0) {
-      setActiveDatasetId(null);
-      setDatasetPreview(null);
-      setDatasetPreviewError(null);
+    if (selectedQuestionType === "sql") {
+      if (sqlDatasetVariants.length === 0) {
+        setActiveDatasetId(null);
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        return;
+      }
+
+      setActiveDatasetId((prev) => {
+        if (prev && sqlDatasetVariants.some((dataset) => dataset.id === prev)) {
+          return prev;
+        }
+        return sqlDatasetVariants[0]?.id ?? null;
+      });
       return;
     }
 
-    setActiveDatasetId((prev) => {
-      if (prev && sqlDatasetVariants.some((dataset) => dataset.id === prev)) {
-        return prev;
+    if (selectedQuestionType === "python") {
+      if (availablePythonDatasets.length === 0) {
+        setActiveDatasetId(null);
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        return;
       }
-      return sqlDatasetVariants[0]?.id ?? null;
-    });
-  }, [sqlDatasetVariants, selectedQuestionType, selectedQuestionForPopup?.id]);
+
+      setDatasetPreview(null);
+      setDatasetPreviewError(null);
+      setActiveDatasetId((prev) => {
+        if (prev && availablePythonDatasets.some((dataset) => dataset.id === prev)) {
+          return prev;
+        }
+        return availablePythonDatasets[0]?.id ?? null;
+      });
+      return;
+    }
+
+    if (selectedQuestionType === "google_sheets") {
+      return;
+    }
+
+    setActiveDatasetId(null);
+    setDatasetPreview(null);
+    setDatasetPreviewError(null);
+  }, [
+    availablePythonDatasets,
+    sqlDatasetVariants,
+    selectedQuestionForPopup?.id,
+    selectedQuestionType,
+  ]);
 
   const loadDatasetPreview = useCallback(
     async (datasetId: string | null) => {
-      if (selectedQuestionType !== "sql") {
-        setDatasetPreview(null);
-        setDatasetPreviewError(null);
+      setLoadingDatasetPreview(true);
+
+      if (selectedQuestionType === "google_sheets") {
+        setLoadingDatasetPreview(false);
         return;
       }
 
       if (!datasetId) {
         setDatasetPreview(null);
         setDatasetPreviewError(null);
+        setLoadingDatasetPreview(false);
+        return;
+      }
+
+      if (selectedQuestionType === "python") {
+        try {
+          const detail = pythonDatasetDetails[datasetId];
+          if (!detail) {
+            setDatasetPreview(null);
+            setDatasetPreviewError("Dataset preview is not available.");
+            return;
+          }
+
+          if (detail.previewRows.length > 0 && detail.columns.length > 0) {
+            setDatasetPreview({
+              columns: detail.columns,
+              rows: detail.previewRows,
+            });
+            setDatasetPreviewError(null);
+          } else {
+            setDatasetPreview(null);
+            setDatasetPreviewError(
+              detail.loadError ?? "Preview data is not available for this dataset yet.",
+            );
+          }
+        } finally {
+          setLoadingDatasetPreview(false);
+        }
+        return;
+      }
+
+      if (selectedQuestionType !== "sql") {
+        setDatasetPreview(null);
+        setDatasetPreviewError(null);
+        setLoadingDatasetPreview(false);
         return;
       }
 
@@ -2427,6 +3843,7 @@ export function SubjectLearningInterface({
       if (!targetDataset) {
         setDatasetPreview(null);
         setDatasetPreviewError(null);
+        setLoadingDatasetPreview(false);
         return;
       }
 
@@ -2434,7 +3851,6 @@ export function SubjectLearningInterface({
         availableSqlDatasets.find((dataset) => dataset.id === targetDataset.baseDatasetId) ??
         targetDataset;
 
-      setLoadingDatasetPreview(true);
       setDatasetPreviewError(null);
 
       const normalizeRowValues = (row: unknown, columns: string[]): unknown[] => {
@@ -2492,7 +3908,7 @@ export function SubjectLearningInterface({
           if (result.success && result.result) {
             setDatasetPreview({
               columns: result.result.columns ?? [],
-              rows: (result.result.rows ?? []).map((row) => Array.isArray(row) ? row : [row]),
+              rows: (result.result.rows ?? []).map((row) => (Array.isArray(row) ? row : [row])),
             });
             setLoadingDatasetPreview(false);
             return;
@@ -2546,6 +3962,7 @@ export function SubjectLearningInterface({
     },
     [
       availableSqlDatasets,
+      pythonDatasetDetails,
       sqlDatasetVariants,
       duckDbDatasetTables,
       duckDbTables,
@@ -2560,6 +3977,190 @@ export function SubjectLearningInterface({
   useEffect(() => {
     loadDatasetPreview(activeDatasetId);
   }, [activeDatasetId, loadDatasetPreview]);
+
+  useEffect(() => {
+    if (!isSpreadsheetQuestion) {
+      return;
+    }
+
+    if (!spreadsheetDatasets.length) {
+      if (activeDatasetId !== null) {
+        setActiveDatasetId(null);
+      }
+      setLoadingDatasetPreview(false);
+      setDatasetPreview(null);
+      setDatasetPreviewError("Dataset preview is not available yet.");
+      return;
+    }
+
+    let currentDataset =
+      activeDatasetId !== null
+        ? spreadsheetDatasets.find((dataset) => dataset.id === activeDatasetId)
+        : undefined;
+
+    if (!currentDataset) {
+      const fallbackDataset = spreadsheetDatasets[0];
+      if (activeDatasetId !== fallbackDataset.id) {
+        setActiveDatasetId(fallbackDataset.id);
+        return;
+      }
+      currentDataset = fallbackDataset;
+    }
+
+    setLoadingDatasetPreview(false);
+    setDatasetPreview(currentDataset.preview);
+    setDatasetPreviewError(
+      currentDataset.preview ? null : "Dataset preview is not available yet.",
+    );
+  }, [activeDatasetId, isSpreadsheetQuestion, spreadsheetDatasets]);
+
+  useEffect(() => {
+    if (selectedQuestionType !== "python") {
+      if (Object.keys(pythonDatasetStatus).length > 0) {
+        setPythonDatasetStatus({});
+      }
+      return;
+    }
+
+    if (availablePythonDatasets.length === 0) {
+      if (Object.keys(pythonDatasetStatus).length > 0) {
+        setPythonDatasetStatus({});
+      }
+      return;
+    }
+
+    setPythonDatasetStatus((prev) => {
+      const allowedIds = new Set(availablePythonDatasets.map((dataset) => dataset.id));
+      const next: Record<string, PythonDatasetLoadState> = {};
+      let changed = false;
+
+      allowedIds.forEach((id) => {
+        if (prev[id]) {
+          next[id] = prev[id];
+        } else {
+          changed = true;
+        }
+      });
+
+      if (Object.keys(prev).length !== Object.keys(next).length) {
+        changed = true;
+      }
+
+      return changed ? next : prev;
+    });
+  }, [availablePythonDatasets, pythonDatasetStatus, selectedQuestionType]);
+
+  useEffect(() => {
+    if (selectedQuestionType !== "python") {
+      return;
+    }
+    if (!isPyodideReady) {
+      return;
+    }
+    if (availablePythonDatasets.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadDatasetsIntoPyodide = async () => {
+      for (const dataset of availablePythonDatasets) {
+        const detail = pythonDatasetDetails[dataset.id];
+        if (!detail) {
+          continue;
+        }
+
+        if (!detail.objectRows.length) {
+          setPythonDatasetStatus((prev) => {
+            const current = prev[dataset.id];
+            const nextState: PythonDatasetLoadState = {
+              state: "failed",
+              message: detail.loadError ?? "Dataset has no rows available to load.",
+              variable: detail.pythonVariable,
+            };
+            if (
+              current &&
+              current.state === nextState.state &&
+              current.message === nextState.message &&
+              current.variable === nextState.variable
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [dataset.id]: nextState,
+            };
+          });
+          continue;
+        }
+
+        setPythonDatasetStatus((prev) => {
+          const current = prev[dataset.id];
+          if (current?.state === "loaded" || current?.state === "loading") {
+            return prev;
+          }
+          return {
+            ...prev,
+            [dataset.id]: { state: "loading", variable: detail.pythonVariable },
+          };
+        });
+
+        try {
+          const loaded = await loadPyodideDataFrame(detail.pythonVariable, detail.objectRows);
+          if (cancelled) {
+            return;
+          }
+          setPythonDatasetStatus((prev) => ({
+            ...prev,
+            [dataset.id]: loaded
+              ? { state: "loaded", variable: detail.pythonVariable }
+              : {
+                  state: "failed",
+                  variable: detail.pythonVariable,
+                  message: "Failed to load dataset into Python runtime.",
+                },
+          }));
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+          setPythonDatasetStatus((prev) => ({
+            ...prev,
+            [dataset.id]: {
+              state: "failed",
+              variable: detail.pythonVariable,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : "Failed to load dataset into Python runtime.",
+            },
+          }));
+        }
+      }
+    };
+
+    loadDatasetsIntoPyodide();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    availablePythonDatasets,
+    isPyodideReady,
+    loadPyodideDataFrame,
+    pythonDatasetDetails,
+    selectedQuestionType,
+  ]);
+
+  const activePythonDatasetDetail =
+    selectedQuestionType === "python" && activeDatasetId
+      ? pythonDatasetDetails[activeDatasetId]
+      : undefined;
+
+  const activePythonDatasetStatus =
+    selectedQuestionType === "python" && activeDatasetId
+      ? pythonDatasetStatus[activeDatasetId]
+      : undefined;
 
   const datasetLoadSignature = useMemo(
     () =>
@@ -2855,13 +4456,21 @@ export function SubjectLearningInterface({
 
     const firstQuestion = questions[0];
     // console.log('[AUTO-SELECT DEBUG] Setting first question:', firstQuestion);
+    const exerciseDatasetType = resolveDatasetLanguage(
+      activeExercise?.subject_type,
+      activeExercise?.exercise_type,
+      activeExercise?.practice_type,
+      activeExercise?.type,
+    );
     setActiveExerciseQuestion(
       {
         ...firstQuestion,
         exerciseId: activeExercise.id ? String(activeExercise.id) : null,
         exerciseTitle: activeExercise.title,
         exerciseDescription: activeExercise.description,
-        exerciseDataset: normalizeCreationSql(activeExercise.dataset),
+        exerciseDataset: normalizeCreationSql(activeExercise.dataset, {
+          datasetType: exerciseDatasetType,
+        }),
       },
       0,
     );
@@ -3807,8 +5416,7 @@ export function SubjectLearningInterface({
               </div>
               <div>
                 <div className="text-3xl font-bold text-purple-600">
-                  {Math.round(((adaptiveQuizSummary.responses?.filter((r: any) => r.is_correct).length || 0) /
-                    (adaptiveQuizSummary.responses?.length || 1)) * 100)}%
+                  {Math.round(((adaptiveQuizSummary.responses?.filter((r: any) => r.is_correct).length || 0) / (adaptiveQuizSummary.responses?.length || 1)) * 100)}%
                 </div>
                 <div className="text-sm text-gray-600 mt-1">Score</div>
               </div>
@@ -3955,15 +5563,7 @@ export function SubjectLearningInterface({
               disabled={!adaptiveQuizAnswer || submittingAdaptiveAnswer || showAdaptiveExplanation}
               className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {/* {submittingAdaptiveAnswer ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Submitting...</span>
-                </>
-              ) : (
-                <span>Submit</span>
-              )} */}
-              <span>Submit</span>
+              <span>{submittingAdaptiveAnswer ? 'Submit' : 'Submit'}</span>
             </button>
             <button
               onClick={handleAdaptiveQuizNext}
@@ -3974,15 +5574,7 @@ export function SubjectLearningInterface({
               }
               className="px-6 py-2.5 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {submittingAdaptiveAnswer ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                  <span></span>
-                </>
-              ) : (
-                <span>Next</span>
-              )}
-              {/* <span>Next</span> */}
+              <span>Next</span>
             </button>
           </div>
         </div>
@@ -4085,16 +5677,58 @@ export function SubjectLearningInterface({
     };
 
     const config = languageConfig[questionType] || languageConfig.sql;
-    const availableDatasets = questionType === "sql" ? sqlDatasetVariants : [];
-    const activeDataset =
+    const sqlDatasetsForQuestion = questionType === "sql" ? sqlDatasetVariants : [];
+    const activeSqlDataset =
       questionType === "sql" && activeDatasetId
-        ? availableDatasets.find((dataset) => dataset.id === activeDatasetId) ?? null
+        ? sqlDatasetsForQuestion.find((dataset) => dataset.id === activeDatasetId) ?? null
         : null;
 
-    const formatCellValue = (value: unknown) => {
-      if (value === null || value === undefined) {
-        return "NULL";
+    const formatDatasetTimestamp = (rawValue: unknown) => {
+      const numericValue =
+        typeof rawValue === "number"
+          ? rawValue
+          : typeof rawValue === "string"
+          ? Number(rawValue.trim())
+          : NaN;
+
+      if (!Number.isFinite(numericValue)) {
+        return null;
       }
+
+      const timestampMs = numericValue < 1e12 ? numericValue * 1000 : numericValue;
+      const parsedDate = new Date(timestampMs);
+
+      if (Number.isNaN(parsedDate.getTime())) {
+        return null;
+      }
+
+      return parsedDate.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    };
+
+    const formatCellValue = (value: unknown, columnName?: string) => {
+      if (
+        value === null ||
+        value === undefined ||
+        (typeof value === "string" && value.trim().length === 0) ||
+        (typeof value === "string" && value.trim().toUpperCase() === "NULL")
+      ) {
+        return "—";
+      }
+
+      const normalizedColumn = columnName?.trim();
+      if (normalizedColumn && DATASET_TIMESTAMP_COLUMNS.has(normalizedColumn)) {
+        const formattedTimestamp = formatDatasetTimestamp(value);
+        if (formattedTimestamp) {
+          return formattedTimestamp;
+        }
+      }
+
       if (typeof value === "object") {
         try {
           return JSON.stringify(value);
@@ -4102,6 +5736,7 @@ export function SubjectLearningInterface({
           return String(value);
         }
       }
+
       return String(value);
     };
 
@@ -4117,6 +5752,7 @@ export function SubjectLearningInterface({
       typeof headerSubtitle === "string" && headerSubtitle.length > 160
         ? `${headerSubtitle.slice(0, 157)}...`
         : headerSubtitle;
+    const businessContext = activeExercise?.content || "";
 
     const header = (
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
@@ -4127,14 +5763,18 @@ export function SubjectLearningInterface({
           <h2 className="mt-2 truncate text-xl font-semibold text-slate-900">{headerTitle}</h2>
           {trimmedSubtitle && (
             <p className="mt-1 text-sm text-slate-500">{trimmedSubtitle}</p>
+            
+          )}
+          {businessContext && (
+            <p className="mt-1 text-sm text-slate-500"><strong>Business Context:</strong> {businessContext}</p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-right gap-2">
           {renderContentExpansionToggle("light")}
           {isEmbedded && (
             <button
               onClick={handleExitEmbeddedExercise}
-              className="flex items-center gap-2 rounded-lg border border-transparent px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
+              className="flex items-right gap-2 rounded-lg border border-transparent px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
               Exit
@@ -4236,9 +5876,9 @@ export function SubjectLearningInterface({
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {availableDatasets.length > 1 && (
+                  {sqlDatasetsForQuestion.length > 1 && (
                     <div className="flex flex-wrap justify-end gap-2">
-                      {availableDatasets.map((dataset) => {
+                      {sqlDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
                         const label = dataset.displayName || dataset.name || dataset.table_name || "Dataset";
                         return (
@@ -4262,31 +5902,56 @@ export function SubjectLearningInterface({
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                     <div className="flex flex-col">
                       <span className="text-sm font-semibold text-slate-800">
-                        {activeDataset?.displayName ||
-                          activeDataset?.name ||
-                          activeDataset?.table_name ||
+                        {activeSqlDataset?.displayName ||
+                          activeSqlDataset?.name ||
+                          activeSqlDataset?.table_name ||
                           "Dataset"}
                       </span>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
-                        {(activeDataset?.resolvedTableName ?? activeDataset?.table_name) && (
+                        {(activeSqlDataset?.resolvedTableName ?? activeSqlDataset?.table_name) && (
                           <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
-                            Table: {activeDataset.resolvedTableName ?? activeDataset.table_name}
+                            Table: {activeSqlDataset.resolvedTableName ?? activeSqlDataset.table_name}
                           </span>
                         )}
-                        {activeDataset?.columns?.length ? (
+                        {activeSqlDataset?.columns?.length ? (
                           <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
-                            Columns: {activeDataset.columns.slice(0, 6).join(", ")}
-                            {activeDataset.columns.length > 6
-                              ? ` +${activeDataset.columns.length - 6}`
+                            Columns: {activeSqlDataset.columns.slice(0, 6).join(", ")}
+                            {activeSqlDataset.columns.length > 6
+                              ? ` +${activeSqlDataset.columns.length - 6}`
                               : ""}
                           </span>
                         ) : null}
                       </div>
                     </div>
-                    {loadingDatasetPreview && (
-                      <div className="flex items-center gap-2 text-xs text-indigo-600">
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
-                        <span>Preparing preview...</span>
+                    {(datasetPreview || loadingDatasetPreview) && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() =>
+                            downloadDatasetPreview({
+                              fileName:
+                                activeSqlDataset?.displayName ||
+                                activeSqlDataset?.name ||
+                                activeSqlDataset?.table_name ||
+                                "dataset",
+                              worksheetName:
+                                activeSqlDataset?.resolvedTableName ||
+                                activeSqlDataset?.table_name ||
+                                activeSqlDataset?.name ||
+                                "Dataset",
+                            })
+                          }
+                          disabled={!datasetPreview || downloadingDataset}
+                          className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          <span>{downloadingDataset ? "Preparing..." : "Download .xlsx"}</span>
+                        </button>
+                        {loadingDatasetPreview && (
+                          <div className="flex items-center gap-2 text-xs text-indigo-600">
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
+                            <span>Preparing preview...</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -4312,16 +5977,23 @@ export function SubjectLearningInterface({
                                 key={rowIndex}
                                 className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50"}
                               >
-                                {row.map((cell, cellIndex) => (
-                                  <td
-                                    key={`${rowIndex}-${cellIndex}`}
-                                    className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-600"
-                                  >
-                                    <span className="block max-w-[140px] truncate" title={formatCellValue(cell)}>
-                                      {formatCellValue(cell)}
-                                    </span>
-                                  </td>
-                                ))}
+                                  {row.map((cell, cellIndex) => {
+                                    const columnName = datasetPreview.columns[cellIndex];
+                                    const formattedValue = formatCellValue(cell, columnName);
+                                    return (
+                                      <td
+                                        key={`${rowIndex}-${cellIndex}`}
+                                        className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-600"
+                                      >
+                                        <span
+                                          className="block max-w-[140px] truncate"
+                                          title={formattedValue}
+                                        >
+                                          {formattedValue}
+                                        </span>
+                                      </td>
+                                    );
+                                  })}
                               </tr>
                             ))}
                           </tbody>
@@ -4334,17 +6006,21 @@ export function SubjectLearningInterface({
                             ? datasetPreviewError
                             : loadingDatasetPreview
                             ? "Preparing dataset preview..."
-                            : availableDatasets.length === 0
+                            : sqlDatasetsForQuestion.length === 0
                             ? "No datasets available for this question."
                             : "Preview not available. Try running the dataset creation SQL from the editor."}
                         </p>
                       </div>
                     )}
                   </div>
-                  {activeDataset?.creation_sql && (
+                  {activeSqlDataset?.creation_sql && (
                     <div className="border-t border-slate-200 bg-slate-50 px-5 py-3">
                       <button
-                        onClick={() => setSqlCode(activeDataset.creation_sql)}
+                        onClick={() => {
+                          if (activeSqlDataset?.creation_sql) {
+                            setSqlCode(activeSqlDataset.creation_sql);
+                          }
+                        }}
                         className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
                       >
                         Load creation SQL into editor
@@ -4353,16 +6029,378 @@ export function SubjectLearningInterface({
                   )}
                 </div>
               </div>
+            ) : questionType === "python" ? (
+              availablePythonDatasets.length > 0 ? (
+                <div className="flex min-h-full flex-col gap-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+                      Dataset Preview
+                    </h4>
+                    {availablePythonDatasets.length > 1 && (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {availablePythonDatasets.map((dataset) => {
+                          const isActive = dataset.id === activeDatasetId;
+                          const detail = pythonDatasetDetails[dataset.id];
+                          const label = detail?.name || dataset.name || dataset.table_name || "Dataset";
+                          return (
+                            <button
+                              key={dataset.id}
+                              onClick={() => setActiveDatasetId(dataset.id)}
+                              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                                isActive
+                                  ? "bg-indigo-600 text-white shadow-sm"
+                                  : "bg-white text-slate-600 ring-1 ring-slate-200 hover:text-indigo-600"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
+                    <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-semibold text-slate-800">
+                          {activePythonDatasetDetail?.name ||
+                            availablePythonDatasets.find((dataset) => dataset.id === activeDatasetId)?.name ||
+                            "Dataset"}
+                        </span>
+                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+                          {activePythonDatasetDetail?.pythonVariable && (
+                            <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                              Variable: {activePythonDatasetDetail.pythonVariable}
+                            </span>
+                          )}
+                          {typeof activePythonDatasetDetail?.rowCount === "number" && (
+                            <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                              Rows: {activePythonDatasetDetail.rowCount}
+                            </span>
+                          )}
+                          {activePythonDatasetStatus?.state === "loaded" && (
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
+                              Loaded into Pyodide
+                            </span>
+                          )}
+                          {activePythonDatasetStatus?.state === "loading" && (
+                            <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-indigo-700">
+                              Loading into Pyodide...
+                            </span>
+                          )}
+                          {activePythonDatasetStatus?.state === "failed" && (
+                            <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-rose-700">
+                              Load failed
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {(datasetPreview || loadingDatasetPreview) && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              const definition =
+                                availablePythonDatasets.find((dataset) => dataset.id === activeDatasetId) ??
+                                availablePythonDatasets[0];
+                              downloadDatasetPreview({
+                                fileName:
+                                  activePythonDatasetDetail?.name ||
+                                  definition?.name ||
+                                  definition?.table_name ||
+                                  "dataset",
+                                worksheetName:
+                                  activePythonDatasetDetail?.pythonVariable ||
+                                  definition?.table_name ||
+                                  activePythonDatasetDetail?.name ||
+                                  definition?.name ||
+                                  "Dataset",
+                              });
+                            }}
+                            disabled={!datasetPreview || downloadingDataset}
+                            className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            <span>{downloadingDataset ? "Preparing..." : "Download .xlsx"}</span>
+                          </button>
+                          {loadingDatasetPreview && (
+                            <div className="flex items-center gap-2 text-xs text-indigo-600">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
+                              <span>Preparing preview...</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 overflow-hidden">
+                      {datasetPreview ? (
+                        <div className="max-h-[320px] px-5 py-4 overflow-x-auto overflow-y-auto">
+                          <table className="min-w-full border-collapse text-xs text-slate-700">
+                            <thead className="sticky top-0 bg-slate-100">
+                              <tr>
+                                {datasetPreview.columns.map((column) => (
+                                  <th
+                                    key={column}
+                                    className="border border-slate-200 px-3 py-2 text-left font-semibold"
+                                  >
+                                    {column}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {datasetPreview.rows.map((row, rowIndex) => (
+                                <tr
+                                  key={rowIndex}
+                                  className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50"}
+                                >
+                                  {row.map((cell, cellIndex) => {
+                                    const columnName = datasetPreview.columns[cellIndex];
+                                    const formattedValue = formatCellValue(cell, columnName);
+                                    return (
+                                      <td
+                                        key={`${rowIndex}-${cellIndex}`}
+                                        className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-600"
+                                      >
+                                        <span
+                                          className="block max-w-[140px] truncate"
+                                          title={formattedValue}
+                                        >
+                                          {formattedValue}
+                                        </span>
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="flex h-full items-center justify-center px-5 py-10 text-center">
+                          <p className="text-sm text-slate-500">
+                            {datasetPreviewError
+                              ? datasetPreviewError
+                              : loadingDatasetPreview
+                              ? "Preparing dataset preview..."
+                              : "Dataset preview is not available yet for this Python question."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    {(activePythonDatasetStatus?.message || activePythonDatasetDetail?.description) && (
+                      <div className="border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-600">
+                        {activePythonDatasetStatus?.message && (
+                          <p className="mb-1 text-rose-600">{activePythonDatasetStatus.message}</p>
+                        )}
+                        {activePythonDatasetDetail?.description && (
+                          <p>{activePythonDatasetDetail.description}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white text-center shadow-sm">
+                  <p className="px-6 text-sm text-slate-500">
+                    No datasets were provided for this Python question.
+                  </p>
+                </div>
+              )
+            ) : questionType === "google_sheets" ? (
+              <div className="flex min-h-full flex-col gap-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+                    Dataset Preview
+                  </h4>
+                  {spreadsheetDatasets.length > 1 && (
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {spreadsheetDatasets.map((dataset) => {
+                        const isActive = dataset.id === activeDatasetId;
+                        return (
+                          <button
+                            key={dataset.id}
+                            onClick={() => setActiveDatasetId(dataset.id)}
+                            className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                              isActive
+                                ? "bg-indigo-600 text-white shadow-sm"
+                                : "bg-white text-slate-600 ring-1 ring-slate-200 hover:text-indigo-600"
+                            }`}
+                          >
+                            {dataset.name || "Dataset"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="flex flex-col gap-2 border-b border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <span className="text-sm font-semibold text-slate-800">
+                        {activeSpreadsheetDataset?.name || "Dataset"}
+                      </span>
+                      {activeSpreadsheetDataset?.description && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          {activeSpreadsheetDataset.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() =>
+                          downloadDatasetPreview({
+                            fileName:
+                              activeSpreadsheetDataset?.name ||
+                              selectedQuestionForPopup?.exerciseTitle ||
+                              "dataset",
+                            worksheetName: activeSpreadsheetDataset?.name || "Dataset",
+                          })
+                        }
+                        disabled={!datasetPreview || downloadingDataset}
+                        className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        <span>{downloadingDataset ? "Preparing..." : "Download .xlsx"}</span>
+                      </button>
+                      {loadingDatasetPreview && (
+                        <div className="flex items-center gap-2 text-xs text-indigo-600">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
+                          <span>Preparing preview...</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    {datasetPreview ? (
+                      <div className="max-h-[320px] px-5 py-4 overflow-x-auto overflow-y-auto">
+                        <table className="min-w-full border-collapse text-xs text-slate-700">
+                          <thead className="sticky top-0 bg-slate-100">
+                            <tr>
+                              {datasetPreview.columns.map((column) => (
+                                <th
+                                  key={column}
+                                  className="border border-slate-200 px-3 py-2 text-left font-semibold"
+                                >
+                                  {column}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {datasetPreview.rows.map((row, rowIndex) => (
+                              <tr
+                                key={rowIndex}
+                                className={rowIndex % 2 === 0 ? "bg-white" : "bg-slate-50"}
+                              >
+                                {row.map((cell, cellIndex) => {
+                                  const columnName = datasetPreview.columns[cellIndex];
+                                  const formattedValue = formatCellValue(cell, columnName);
+                                  return (
+                                    <td
+                                      key={`${rowIndex}-${cellIndex}`}
+                                      className="border border-slate-200 px-3 py-2 font-mono text-[11px] text-slate-600"
+                                    >
+                                      <span
+                                        className="block max-w-[140px] truncate"
+                                        title={formattedValue}
+                                      >
+                                        {formattedValue}
+                                      </span>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="flex h-full items-center justify-center px-5 py-10 text-center">
+                        <p className="text-sm text-slate-500">
+                          {datasetPreviewError
+                            ? datasetPreviewError
+                            : "Dataset preview is not available yet for this activity."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="flex h-full flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white text-center shadow-sm">
                 <p className="px-6 text-sm text-slate-500">
-                  No dataset preview for {config.name} questions. Focus on the prompt on the right to craft your solution.
+                  No dataset preview for {config.name} questions.
                 </p>
               </div>
             )}
           </div>
         </div>
-        <div className="flex min-h-0 flex-col bg-white">
+        {isSpreadsheetQuestion ? (
+          <div className="flex min-h-0 flex-col bg-white">
+            <div className="border-b border-slate-200 px-6 py-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">Google Sheets Workspace</h3>
+                  <p className="text-sm text-slate-500">
+                    Download the dataset, work through the task in Google Sheets, then return to mark this question complete.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-5">
+              <div className="space-y-4">
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700">
+                  <p>
+                    {selectedQuestionForPopup?.exerciseDescription
+                      ? selectedQuestionForPopup.exerciseDescription
+                      : "Use Google Sheets to explore the dataset, apply any formulas you need, and capture your findings before submitting."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() =>
+                      downloadDatasetPreview({
+                        fileName:
+                          activeSpreadsheetDataset?.name ||
+                          selectedQuestionForPopup?.exerciseTitle ||
+                          "dataset",
+                        worksheetName: activeSpreadsheetDataset?.name || "Dataset",
+                      })
+                    }
+                    disabled={!datasetPreview || downloadingDataset}
+                    className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-400"
+                  >
+                    <Download className="h-4 w-4" />
+                    <span>{downloadingDataset ? "Preparing..." : "Download Dataset"}</span>
+                  </button>
+                  <button
+                    onClick={() => markQuestionCompleted(selectedQuestionForPopup)}
+                    className="rounded-lg border border-emerald-500 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    Mark Complete
+                  </button>
+                  <button
+                    onClick={() => handleNavigateExerciseQuestion(1)}
+                    disabled={!hasNextQuestion}
+                    className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-600 hover:border-indigo-200 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  <p className="font-semibold text-slate-700">Suggested steps</p>
+                  <ol className="mt-2 list-decimal space-y-1 pl-5">
+                    <li>Import the downloaded file into Google Sheets.</li>
+                    <li>Use filters, formulas, or charts to answer the prompt.</li>
+                    <li>Record your conclusion, then mark the question complete here.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-col bg-white">
           <div className="border-b border-slate-200 px-6 py-5">
             <div className="flex items-center justify-between">
               <div>
@@ -4390,6 +6428,9 @@ export function SubjectLearningInterface({
               />
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 bg-slate-900/60 px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                  {!isPyodideReady && questionType === "python" && (
+                    <span className="rounded-full bg-slate-800 px-3 py-1">Preparing Python runtime...</span>
+                  )}
                   {!isDuckDbReady && questionType === "sql" && (
                     <span className="rounded-full bg-slate-800 px-3 py-1">Preparing DuckDB...</span>
                   )}
@@ -4407,16 +6448,18 @@ export function SubjectLearningInterface({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button
-                    onClick={() => handleExecuteSQL(sqlCode)}
+                    onClick={() => handleExecuteCode(sqlCode)}
                     disabled={
                       isExecutingSql ||
+                      isExecutingPython ||
                       !sqlCode.trim() ||
-                      (questionType === "sql" && (!isDuckDbReady || isPreparingDuckDb))
+                      (questionType === "sql" && (!isDuckDbReady || isPreparingDuckDb)) ||
+                      (questionType === "python" && !isPyodideReady)
                     }
                     className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
                   >
                     <Play className="h-4 w-4" />
-                    Run
+                    {isExecutingSql || isExecutingPython ? "Running..." : "Run"}
                   </button>
                   <button
                     onClick={() => markQuestionCompleted(question)}
@@ -4446,6 +6489,14 @@ export function SubjectLearningInterface({
                     <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Loading datasets..."}</span>
                   </div>
                 )}
+
+                {isPyodideLoading && (
+                  <div className="flex items-center gap-2 text-xs text-indigo-300">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
+                    <span>Initializing Python runtime...</span>
+                  </div>
+                )}
+
               </div>
               <div className="flex-1 overflow-auto px-5 py-4 font-mono text-sm text-emerald-200">
                 {duckDbError && (
@@ -4458,11 +6509,25 @@ export function SubjectLearningInterface({
                     {duckDbSetupError}
                   </div>
                 )}
-                {sqlResults.length === 0 && !sqlError && !isExecutingSql && (
+                {sqlResults.length === 0 && !sqlError && !isExecutingSql && !pythonOutput && !pythonError && !isExecutingPython && (
                   <div className="text-sm text-slate-400">
                     {sqlCode.trim()
                       ? "Run your solution to inspect the output here."
                       : "Start coding above to see your output stream here."}
+                  </div>
+                )}
+                {pythonOutput && (
+                  <div className="mb-6">
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/60 px-4 py-3">
+                      <pre className="whitespace-pre-wrap text-emerald-200 text-xs">{pythonOutput}</pre>
+                    </div>
+                  </div>
+                )}
+                {pythonError && (
+                  <div className="mb-6">
+                    <div className="rounded-lg border border-rose-500/40 bg-rose-900/40 px-4 py-3">
+                      <pre className="whitespace-pre-wrap text-rose-100 text-xs">{pythonError}</pre>
+                    </div>
                   </div>
                 )}
                 {sqlResults.map((result, index) => (
@@ -4516,6 +6581,7 @@ export function SubjectLearningInterface({
             </div>
           </div>
         </div>
+        )}
       </div>
     );
 
@@ -5020,84 +7086,30 @@ export function SubjectLearningInterface({
 
                             if (hasExercisesFromAPI) {
                               return sectionExercisesData.map((exercise: any) => (
+                                
                                 <div key={exercise.id} className="space-y-2">
-                                  {/* Exercise Header with Instructions */}
                                   <div className="p-3 bg-gray-50 rounded-lg">
                                     <h4 className="font-medium text-gray-900 text-sm">{exercise.title}</h4>
                                     {exercise.description && (
                                       <p className="text-xs text-gray-600 mt-1">{exercise.description}</p>
                                     )}
-                                    {/* Dataset Preview */}
-                                    {exercise.dataset && (
-                                      <div className="mt-2 p-2 bg-white rounded border text-xs">
-                                        <p className="font-medium text-gray-800 mb-1">Dataset:</p>
-                                        {typeof exercise.dataset === 'string' ? (
-                                          <pre className="text-gray-700 overflow-auto max-h-20">{exercise.dataset}</pre>
-                                        ) : (
-                                          <div className="overflow-auto max-h-20">
-                                            {Object.keys(exercise.dataset || {}).slice(0, 3).map(key => (
-                                              <div key={key} className="text-gray-700">
-                                                {key}: {JSON.stringify((exercise.dataset as any)[key]).slice(0, 50)}...
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
                                   </div>
-
-                                  {/* Questions for this exercise */}
-                                  {exercise?.section_exercise_questions && exercise.section_exercise_questions.length > 0 && (
-                                    <div className="space-y-1 pl-4 border-l-2 border-gray-200">
-                                      {exercise.section_exercise_questions.map((question: any, questionIndex: number) => {
-                                        const isActiveQuestion = selectedResource?.sectionId === section.id &&
-                                          selectedResource?.kind === "exercise" &&
-                                          selectedResource?.resourceId === exercise.id &&
-                                          selectedQuestionForPopup?.id === question.id;
-
-                                        return (
-                                          <button
-                                            key={`${exercise.id}-question-${question.id || questionIndex}`}
-                                            onClick={() => {
-                                              handleSelectExercise(section.id, exercise);
-                                              setActiveExerciseQuestion(
-                                                {
-                                                  ...question,
-                                                  exerciseTitle: exercise.title,
-                                                  exerciseDescription: exercise.description,
-                                                  exerciseDataset: normalizeCreationSql(exercise.dataset),
-                                                },
-                                                questionIndex,
-                                              );
-                                              setShowQuestionPopup(true);
-                                            }}
-                                            className={`group flex w-full items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
-                                              isActiveQuestion
-                                                ? "border-indigo-200 bg-indigo-50 text-indigo-800 shadow-sm"
-                                                : "border-transparent text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
-                                            }`}
-                                          >
-                                            <span
-                                              className={`flex h-7 w-7 items-center justify-center rounded-xl ${
-                                                isActiveQuestion
-                                                  ? "bg-indigo-100 text-indigo-600"
-                                                  : "bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600"
-                                              }`}
-                                            >
-                                              <Code className="h-3.5 w-3.5" />
-                                            </span>
-                                            <span className="text-left truncate">{question.question_text || question.text}</span>
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
+                                  <button
+                                    onClick={() => handleSelectExercise(section.id, exercise)}
+                                    className="group flex w-full items-center gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-2 text-sm text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
+                                  >
+                                    <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600">
+                                      <Code className="h-3.5 w-3.5" />
+                                    </span>
+                                    <span>Open Exercise</span>
+                                  </button>
+                                  
                                 </div>
                               ));
                             } else if (exercises.length > 0) {
 
                               // Fallback to generic exercises
-                              console.log("Using generic exercises:", exercises);
+                              // console.log("Using generic exercises:", exercises);
 
                               return exercises.map((exercise, exerciseIndex) => (
                                 <div key={exercise.id || exerciseIndex} className="space-y-2">

@@ -37,6 +37,11 @@ export function CodeExecutor({
   const [isExecuting, setIsExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState<any>(null);
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
+  const [datasetInfo, setDatasetInfo] = useState<{
+    name: string;
+    rows: number;
+    columns: string[];
+  }[]>([]);
 
   // Initialize execution engines
   const duckdb = useDuckDB();
@@ -54,6 +59,7 @@ export function CodeExecutor({
   // Reset dataset load flag whenever the inputs change
   useEffect(() => {
     setDatasetsLoaded(false);
+    setDatasetInfo([]);
   }, [exerciseType, datasets, dataCreationSql]);
 
   // Load datasets when engine is ready
@@ -168,20 +174,86 @@ export function CodeExecutor({
           });
         }
       } else if (usePython && pyodide.isReady) {
-        // For Python, we can load data as pandas DataFrames
-        if (datasets.length > 0 && datasets[0].data) {
-          const dataset = datasets[0];
-          const dataJson = JSON.stringify(dataset.data);
-          await pyodide.executeCode(`
+        // For Python, load all datasets as pandas DataFrames
+        try {
+          console.log('🐍 CodeExecutor: Loading datasets into Pyodide...', {
+            datasetsCount: datasets.length
+          });
+
+          const loadedDatasets: { name: string; rows: number; columns: string[] }[] = [];
+          let outputMessages: string[] = [];
+
+          for (const dataset of datasets) {
+            if (dataset.data && dataset.data.length > 0) {
+              const varName = dataset.table_name || dataset.name || 'df';
+              const dataJson = JSON.stringify(dataset.data);
+              
+              // Load dataset into Pyodide
+              const result = await pyodide.executeCode(`
 import pandas as pd
 import json
 
-data = json.loads('${dataJson.replace(/'/g, "\\'")}')
-df = pd.DataFrame(data)
-print("Dataset loaded with shape:", df.shape)
+# Load dataset
+${varName}_data = json.loads('''${dataJson.replace(/'/g, "\\'")}''')
+${varName} = pd.DataFrame(${varName}_data)
+
+# Get dataset info
+_rows = len(${varName})
+_cols = list(${varName}.columns)
+print(f"✓ Dataset '${varName}' loaded: {_rows} rows × {len(_cols)} columns")
+print(f"  Columns: {', '.join(_cols)}")
 `);
+
+              // Extract columns from the dataset
+              const columns = dataset.columns || Object.keys(dataset.data[0] || {});
+              
+              loadedDatasets.push({
+                name: varName,
+                rows: dataset.data.length,
+                columns: columns
+              });
+
+              // Build output message
+              outputMessages.push(`✓ Dataset '${varName}' loaded: ${dataset.data.length} rows × ${columns.length} columns`);
+              outputMessages.push(`  Columns: ${columns.join(', ')}`);
+
+              console.log(`✅ CodeExecutor: Dataset '${varName}' loaded successfully`);
+            }
+          }
+
+          setDatasetInfo(loadedDatasets);
+          setDatasetsLoaded(true);
+          
+          // Display dataset loading information to the user
+          if (loadedDatasets.length > 0) {
+            // Pre-populate the code editor with import and dataset info
+            const preloadedCode = `import pandas as pd
+import numpy as np
+
+# Datasets loaded:
+${loadedDatasets.map(ds => `# - ${ds.name}: ${ds.rows} rows × ${ds.columns.length} columns`).join('\n')}
+
+# Write your code below:
+`;
+            
+            setCode(preloadedCode);
+            onCodeChange?.(preloadedCode);
+            
+            setExecutionResult({
+              success: true,
+              output: `📊 Datasets loaded successfully!\n\n${outputMessages.join('\n')}\n\nYou can now use these DataFrames in your Python code.`,
+              executionTime: 0
+            });
+          }
+          
+          console.log('✅ CodeExecutor: All Python datasets loaded successfully');
+        } catch (error) {
+          console.error('❌ CodeExecutor: Failed to load datasets into Pyodide:', error);
+          setExecutionResult({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to load datasets'
+          });
         }
-        setDatasetsLoaded(true);
       }
     };
 
