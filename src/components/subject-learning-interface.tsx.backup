@@ -3187,6 +3187,16 @@ export function SubjectLearningInterface({
 
   const handleSelectExercise = useCallback(
     (sectionId: string, exercise: any) => {
+      // console.log('[HANDLE SELECT EXERCISE DEBUG] Called with:', {
+      //   sectionId,
+      //   exerciseId: exercise?.id,
+      //   exerciseTitle: exercise?.title,
+      //   hasSection_exercise_questions: Array.isArray(exercise?.section_exercise_questions),
+      //   section_exercise_questions_length: exercise?.section_exercise_questions?.length || 0,
+      //   hasQuestions: Array.isArray(exercise?.questions),
+      //   questions_length: exercise?.questions?.length || 0,
+      //   exerciseKeys: exercise ? Object.keys(exercise) : []
+      // });
 
       if (!exercise) return;
 
@@ -6653,12 +6663,12 @@ export function SubjectLearningInterface({
   return (
 
     <div
-      className={`relative grid grid-cols-1 gap-6 h-full min-h-0 overflow-hidden ${
+      className={`relative grid grid-cols-1 gap-6 h-full ${
         !isContentExpanded ? "xl:grid-cols-[1fr_380px]" : ""
       }`}
     >
 
-      <div ref={mainContentRef} className="space-y-6 min-w-0 overflow-y-auto">
+      <div ref={mainContentRef} className="space-y-6">
 
         <div className="rounded-2xl border border-white/60 bg-gradient-to-br from-white/80 to-white/60 p-6 backdrop-blur-xl shadow-lg">
 

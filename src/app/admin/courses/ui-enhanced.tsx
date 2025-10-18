@@ -915,6 +915,182 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 }
               }
 
+              const syncExerciseQuestions = async (
+                exerciseId: string,
+                submittedQuestions: any[],
+                existingQuestionsSource: any[],
+              ) => {
+                if (!exerciseId) return;
+
+                const normalizedSubmitted = Array.isArray(submittedQuestions)
+                  ? submittedQuestions
+                      .map((question: any, index: number) => {
+                        const text =
+                          typeof question?.text === 'string'
+                            ? question.text.trim()
+                            : '';
+                        if (!text) return null;
+                        const options = Array.isArray(question?.answers)
+                          ? question.answers
+                              .map((answer: any, optionIndex: number) => {
+                                const answerText =
+                                  typeof answer?.text === 'string'
+                                    ? answer.text.trim()
+                                    : '';
+                                if (!answerText) return null;
+                                return {
+                                  id:
+                                    typeof answer?.id === 'string'
+                                      ? answer.id
+                                      : undefined,
+                                  text: answerText,
+                                  correct: answer?.correct === true,
+                                  order_index:
+                                    typeof answer?.order_index === 'number'
+                                      ? answer.order_index
+                                      : optionIndex + 1,
+                                };
+                              })
+                              .filter((option: any) => option !== null)
+                          : [];
+                        return {
+                          id:
+                            typeof question?.id === 'string'
+                              ? question.id
+                              : undefined,
+                          text,
+                          order_index:
+                            typeof question?.order_index === 'number'
+                              ? question.order_index
+                              : index + 1,
+                          options,
+                        };
+                      })
+                      .filter((question: any) => question !== null)
+                  : [];
+
+                const existingQuestions = Array.isArray(existingQuestionsSource)
+                  ? existingQuestionsSource
+                  : [];
+
+                const existingQuestionMap = new Map(
+                  existingQuestions
+                    .filter((question: any) => typeof question?.id === 'string')
+                    .map((question: any) => [question.id, question]),
+                );
+
+                const submittedIds = new Set(
+                  normalizedSubmitted
+                    .map((question: any) => question.id)
+                    .filter((id): id is string => typeof id === 'string'),
+                );
+
+                for (const existing of existingQuestions) {
+                  if (!existing?.id || submittedIds.has(existing.id)) {
+                    continue;
+                  }
+                  const deleteRes = await fetch(
+                    `/api/admin/section-exercises/${exerciseId}/questions/${existing.id}`,
+                    { method: 'DELETE' },
+                  );
+                  if (!deleteRes.ok) {
+                    const errorText = await deleteRes.text().catch(() => '');
+                    throw new Error(
+                      errorText
+                        ? `Failed to delete exercise question: ${errorText}`
+                        : 'Failed to delete exercise question',
+                    );
+                  }
+                }
+
+                if (
+                  normalizedSubmitted.length === 0 &&
+                  existingQuestions.length === 0
+                ) {
+                  return;
+                }
+
+                for (const question of normalizedSubmitted) {
+                  const optionSource = Array.isArray(question.options)
+                    ? question.options
+                    : Array.isArray((question as any).answers)
+                      ? (question as any).answers
+                      : [];
+                  const options = optionSource.map((option: any, optionIndex: number) => ({
+                    id: typeof option?.id === 'string' ? option.id : undefined,
+                    text:
+                      typeof option?.text === 'string'
+                        ? option.text.trim()
+                        : '',
+                    correct: option?.correct === true,
+                    order_index:
+                      typeof option?.order_index === 'number'
+                        ? option.order_index
+                        : optionIndex + 1,
+                  })).filter((option: any) => option.text !== '');
+                  const payload = {
+                    text: question.text,
+                    type: 'mcq',
+                    order_index: question.order_index,
+                    options: options.map((option: any, optionIndex: number) => ({
+                      text: option.text,
+                      correct: option.correct === true,
+                      order_index:
+                        typeof option.order_index === 'number'
+                          ? option.order_index
+                          : optionIndex + 1,
+                    })),
+                    answers: options
+                      .filter(
+                        (option: any) =>
+                          option.correct === true &&
+                          typeof option.text === 'string' &&
+                          option.text.trim() !== '',
+                      )
+                      .map((option: any) => ({
+                        answer_text: option.text,
+                        is_case_sensitive: false,
+                      })),
+                  };
+
+                  if (question.id && existingQuestionMap.has(question.id)) {
+                    const updateRes = await fetch(
+                      `/api/admin/section-exercises/${exerciseId}/questions/${question.id}`,
+                      {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                      },
+                    );
+                    if (!updateRes.ok) {
+                      const errorText = await updateRes.text().catch(() => '');
+                      throw new Error(
+                        errorText
+                          ? `Failed to update exercise question: ${errorText}`
+                          : 'Failed to update exercise question',
+                      );
+                    }
+                  } else {
+                    const createRes = await fetch(
+                      `/api/admin/section-exercises/${exerciseId}/questions`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                      },
+                    );
+                    if (!createRes.ok) {
+                      const errorText = await createRes.text().catch(() => '');
+                      throw new Error(
+                        errorText
+                          ? `Failed to create exercise question: ${errorText}`
+                          : 'Failed to create exercise question',
+                      );
+                    }
+                  }
+                }
+              };
+
               // Handle practice exercises
               const submittedPractices = Array.isArray(data.practices) ? data.practices : [];
               const normalizedPractices = submittedPractices
@@ -935,7 +1111,25 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     passingScore: practice.passingScore,
                     maxAttempts: practice.maxAttempts,
                   },
+                  questions: Array.isArray(practice.questions) ? practice.questions : [],
                 }));
+              const resolvePracticeId = (source: any): string | undefined => {
+                if (!source || typeof source !== 'object') return undefined;
+                if (typeof source.id === 'string') return source.id;
+                if (
+                  source.data &&
+                  typeof (source.data as Record<string, unknown>)?.id === 'string'
+                ) {
+                  return (source.data as Record<string, unknown>).id as string;
+                }
+                if (
+                  source.practice &&
+                  typeof (source.practice as Record<string, unknown>)?.id === 'string'
+                ) {
+                  return (source.practice as Record<string, unknown>).id as string;
+                }
+                return undefined;
+              };
               const existingPractices = editingSection?.practices ?? [];
               const existingPracticeMap = new Map(existingPractices.map((practice: any) => [practice.id, practice]));
               const practiceIds = new Set(
@@ -985,6 +1179,18 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                   const errorText = await createRes.text();
                   throw new Error(`Failed to add practice exercise "${practice.payload.title}": ${errorText}`);
                 }
+                const createdJson = await createRes.json().catch(() => ({}));
+                const createdPractice = unwrapData(createdJson) as Record<string, unknown>;
+                const newPracticeId =
+                  resolvePracticeId(createdPractice) ??
+                  resolvePracticeId(createdJson);
+                if (newPracticeId) {
+                  await syncExerciseQuestions(
+                    newPracticeId,
+                    Array.isArray(practice.questions) ? practice.questions : [],
+                    [],
+                  );
+                }
               }
 
               for (const practice of practicesToUpdate) {
@@ -1020,6 +1226,21 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 if (!updateRes.ok) {
                   const errorText = await updateRes.text();
                   throw new Error(`Failed to update practice exercise "${practice.payload.title}": ${errorText}`);
+                }
+                if (practice.id) {
+                  const existingPractice = existingPracticeMap.get(practice.id);
+                  const existingQuestionsSource = Array.isArray(
+                    (existingPractice as any)?.section_exercise_questions,
+                  )
+                    ? ((existingPractice as any).section_exercise_questions as any[])
+                    : Array.isArray((existingPractice as any)?.questions)
+                      ? ((existingPractice as any).questions as any[])
+                      : [];
+                  await syncExerciseQuestions(
+                    practice.id,
+                    Array.isArray(practice.questions) ? practice.questions : [],
+                    existingQuestionsSource,
+                  );
                 }
               }
               for (const practice of practicesToDelete) {
@@ -1161,7 +1382,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                       question.options
                         .map((option) => option.id)
                         .filter((id): id is string => typeof id === 'string'),
-                    );
+                    )
                     const optionsToDelete = existingOptions.filter((option: any) => !optionIds.has(option.id));
 
                     if (question.type !== 'mcq') {
@@ -1245,7 +1466,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
         />
       )}
     </div>
-  );
+                      )
 }
 
 /* =========================
@@ -2094,6 +2315,18 @@ function SectionModal({
     codeTemplate?: string;
   };
 
+  type ExerciseAnswerForm = {
+    id: string;
+    text: string;
+    correct: boolean;
+  };
+
+  type ExerciseQuestionForm = {
+    id: string;
+    text: string;
+    answers: ExerciseAnswerForm[];
+  };
+
   type ExerciseForm = {
     id: string;
     title: string;
@@ -2110,6 +2343,7 @@ function SectionModal({
     expectedOutput?: string;
     language?: string;
     order_index?: number;
+    questions: ExerciseQuestionForm[];
   };
 
   type LectureForm = {
@@ -2121,6 +2355,21 @@ function SectionModal({
     url?: string;
     order_index?: number;
   };
+
+  const uniqueId = (prefix: string) =>
+    `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
+
+  const createEmptyAnswer = (correct = false): ExerciseAnswerForm => ({
+    id: uniqueId('ans'),
+    text: '',
+    correct,
+  });
+
+  const createEmptyQuestion = (): ExerciseQuestionForm => ({
+    id: uniqueId('q'),
+    text: '',
+    answers: [createEmptyAnswer(), createEmptyAnswer()],
+  });
   const [formData, setFormData] = useState({
     title: section?.title || "",
     status: (section?.status as "draft" | "published" | "archived") || "draft",
@@ -2140,6 +2389,23 @@ function SectionModal({
     quizQuestions: section?.quiz?.totalQuestions || 5,
     quizItems: [] as QuizQuestionForm[],
   });
+
+  const updateExerciseQuestions = (
+    exerciseIndex: number,
+    updater: (questions: ExerciseQuestionForm[]) => ExerciseQuestionForm[],
+  ) => {
+    setFormData(prev => {
+      const exerciseItems = [...prev.exerciseItems];
+      const target = exerciseItems[exerciseIndex];
+      if (!target) {
+        return prev;
+      }
+      const existingQuestions = Array.isArray(target.questions) ? [...target.questions] : [];
+      const questions = updater(existingQuestions);
+      exerciseItems[exerciseIndex] = { ...target, questions };
+      return { ...prev, exerciseItems };
+    });
+  };
 
   // Prefill quiz builder with existing quiz questions/options on edit
   useEffect(() => {
@@ -2177,6 +2443,32 @@ function SectionModal({
         const timeLimit = parsed.timeLimit ?? (typeof e.time_limit === 'number' ? e.time_limit : undefined);
         const passingScore = parsed.passingScore ?? (typeof e.passing_score === 'number' ? e.passing_score : undefined);
         const maxAttempts = parsed.maxAttempts ?? (typeof e.max_attempts === 'number' ? e.max_attempts : undefined);
+        const rawQuestions = Array.isArray((e as any).section_exercise_questions)
+          ? ((e as any).section_exercise_questions as Record<string, unknown>[])
+          : Array.isArray((parsed as any).questions)
+            ? ((parsed as any).questions as Record<string, unknown>[])
+            : Array.isArray((e as any).questions)
+              ? ((e as any).questions as Record<string, unknown>[])
+              : [];
+
+        const normalizedQuestions = rawQuestions.map((q) => {
+          const optionSource = Array.isArray((q as any).section_exercise_options)
+            ? ((q as any).section_exercise_options as Record<string, unknown>[])
+            : Array.isArray((q as any).options)
+              ? ((q as any).options as Record<string, unknown>[])
+              : [];
+          const answers = optionSource.map((option) => ({
+            id: typeof option.id === 'string' ? option.id : uniqueId('ans'),
+            text: typeof option.text === 'string' ? option.text : '',
+            correct: option.correct === true,
+          }));
+
+          return {
+            id: typeof q.id === 'string' ? q.id : uniqueId('q'),
+            text: typeof q.text === 'string' ? q.text : '',
+            answers: answers.length > 0 ? answers : [createEmptyAnswer(), createEmptyAnswer()],
+          };
+        });
         return {
           id: e.id as string,
           title: (e.title as string) || '',
@@ -2193,6 +2485,7 @@ function SectionModal({
           passingScore,
           maxAttempts,
           order_index: (e.order_index as number) ?? idx + 1,
+          questions: normalizedQuestions,
         };
       });
       setFormData(prev => ({
@@ -2270,6 +2563,17 @@ function SectionModal({
         language: exercise.language,
         expectedOutput: exercise.expectedOutput,
         order_index: idx + 1,
+        questions: exercise.questions.map((question, qIdx) => ({
+          id: question.id,
+          text: question.text,
+          order_index: qIdx + 1,
+          options: question.answers.map((answer, aIdx) => ({
+            id: answer.id,
+            text: answer.text,
+            correct: answer.correct,
+            order_index: aIdx + 1,
+          })),
+        })),
       })),
       quiz: formData.quizItems.length > 0 ? {
         id: `quiz-${Date.now()}`,
@@ -2506,19 +2810,20 @@ function SectionModal({
                       if (e.target.checked) {
                         setFormData(prev => ({
                           ...prev,
-                          exerciseItems: [{
-                            id: `ex-${Date.now()}`,
-                            title: '',
-                            description: '',
-                            difficulty: 'easy' as const,
-                            type: 'practical' as const,
-                            points: 10,
-                            timeLimit: 30,
-                            instructions: '',
-                            starterCode: '',
-                            language: 'python',
-                            expectedOutput: '',
-                          }]
+                      exerciseItems: [{
+                        id: `ex-${Date.now()}`,
+                        title: '',
+                        description: '',
+                        difficulty: 'easy' as const,
+                        type: 'practical' as const,
+                        points: 10,
+                        timeLimit: 30,
+                        instructions: '',
+                        starterCode: '',
+                        language: 'python',
+                        expectedOutput: '',
+                        questions: [],
+                      }]
                         }))
                       } else {
                         setFormData(prev => ({ ...prev, exerciseItems: [] }))
@@ -2549,6 +2854,7 @@ function SectionModal({
                           starterCode: '',
                           language: 'python',
                           expectedOutput: '',
+                          questions: [],
                         }
                       ]
                     }))}
@@ -2565,9 +2871,10 @@ function SectionModal({
                   </div>
 
                   <div className="space-y-4">
-                    {formData.exerciseItems.map((exercise, ei) => (
-                      <div key={exercise.id} className="rounded-xl border border-gray-200 p-4 bg-white">
-                        <div className="flex items-start justify-between mb-3">
+                    {formData.exerciseItems.map((exercise, ei) => {
+                      return (
+                        <div key={exercise.id} className="rounded-xl border border-gray-200 p-4 bg-white">
+                          <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-2">
                             <Label className="text-sm text-gray-700">Exercise {ei + 1}</Label>
                             <select
@@ -2695,6 +3002,176 @@ function SectionModal({
                             />
                           </div>
 
+                          <div className="pt-4 mt-4 border-t border-dashed border-gray-200">
+                            <div className="flex items-center justify-between mb-2">
+                              <Label className="text-sm text-gray-700">Questions &amp; Answers</Label>
+                              {exercise.questions.length === 0 && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="rounded-lg text-sm"
+                                  onClick={() => updateExerciseQuestions(ei, (questions) => [
+                                    ...questions,
+                                    createEmptyQuestion(),
+                                  ])}
+                                >
+                                  <Plus className="h-4 w-4 mr-2" /> Add Questions &amp; Answers
+                                </Button>
+                              )}
+                            </div>
+
+                            {exercise.questions.length > 0 && (
+                              <div className="space-y-3">
+                                {exercise.questions.map((question, qi) => (
+                                  <div key={question.id} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-sm font-medium text-gray-700">Question {qi + 1}</div>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          className="rounded-lg text-xs"
+                                          onClick={() => updateExerciseQuestions(ei, (questions) =>
+                                            questions.filter((_, index) => index !== qi)
+                                          )}
+                                        >
+                                          <Trash2 className="h-3 w-3 mr-1" /> Remove
+                                        </Button>
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                      <div>
+                                        <Label className="text-xs text-gray-500">Prompt</Label>
+                                        <Input
+                                          value={question.text}
+                                          onChange={(e) =>
+                                            updateExerciseQuestions(ei, (questions) => {
+                                              const next = [...questions];
+                                              const current = next[qi];
+                                              if (current) {
+                                                next[qi] = { ...current, text: e.target.value };
+                                              } else {
+                                                next[qi] = { ...createEmptyQuestion(), text: e.target.value };
+                                              }
+                                              return next;
+                                            })
+                                          }
+                                          placeholder="Enter question prompt..."
+                                          className="rounded-lg"
+                                        />
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <Label className="text-xs text-gray-500">Answers</Label>
+                                        {question.answers.map((answer, ai) => (
+                                          <div key={answer.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2">
+                                            <Input
+                                              value={answer.text}
+                                              onChange={(e) =>
+                                                updateExerciseQuestions(ei, (questions) => {
+                                                  const next = [...questions];
+                                                  const current = next[qi] ?? createEmptyQuestion();
+                                                  const answers = Array.isArray(current.answers)
+                                                    ? [...current.answers]
+                                                    : [];
+                                                  const existingAnswer = answers[ai];
+                                                  answers[ai] = existingAnswer
+                                                    ? { ...existingAnswer, text: e.target.value }
+                                                    : { ...createEmptyAnswer(), text: e.target.value };
+                                                  next[qi] = { ...current, answers };
+                                                  return next;
+                                                })
+                                              }
+                                              placeholder={`Answer option ${ai + 1}`}
+                                              className="flex-1 rounded-lg"
+                                            />
+                                            <label className="inline-flex items-center gap-1 text-xs text-gray-600">
+                                              <input
+                                                type="checkbox"
+                                                className="rounded border-gray-300"
+                                                checked={answer.correct}
+                                                onChange={(e) =>
+                                                  updateExerciseQuestions(ei, (questions) => {
+                                                    const next = [...questions];
+                                                    const current = next[qi] ?? createEmptyQuestion();
+                                                    const answers = Array.isArray(current.answers)
+                                                      ? [...current.answers]
+                                                      : [];
+                                                    const existingAnswer = answers[ai] ?? createEmptyAnswer();
+                                                    answers[ai] = { ...existingAnswer, correct: e.target.checked };
+                                                    next[qi] = { ...current, answers };
+                                                    return next;
+                                                  })
+                                                }
+                                              />
+                                              Correct
+                                            </label>
+                                            {question.answers.length > 1 && (
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                className="text-red-500 hover:text-red-600"
+                                                onClick={() =>
+                                                  updateExerciseQuestions(ei, (questions) => {
+                                                    const next = [...questions];
+                                                    const current = next[qi];
+                                                    if (!current) return next;
+                                                    const answers = Array.isArray(current.answers)
+                                                      ? current.answers.filter((_, index) => index !== ai)
+                                                      : [];
+                                                    next[qi] = {
+                                                      ...current,
+                                                      answers: answers.length > 0 ? answers : [createEmptyAnswer()],
+                                                    };
+                                                    return next;
+                                                  })
+                                                }
+                                              >
+                                                <Trash2 className="h-4 w-4" />
+                                              </Button>
+                                            )}
+                                          </div>
+                                        ))}
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          className="rounded-lg text-sm text-[hsl(var(--brand))]"
+                                          onClick={() =>
+                                            updateExerciseQuestions(ei, (questions) => {
+                                              const next = [...questions];
+                                              const current = next[qi] ?? createEmptyQuestion();
+                                              const answers = Array.isArray(current.answers)
+                                                ? [...current.answers]
+                                                : [];
+                                              answers.push(createEmptyAnswer());
+                                              next[qi] = { ...current, answers };
+                                              return next;
+                                            })
+                                          }
+                                        >
+                                          <Plus className="h-4 w-4 mr-2" /> Add Answer
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  className="rounded-lg text-sm"
+                                  onClick={() => updateExerciseQuestions(ei, (questions) => [
+                                    ...questions,
+                                    createEmptyQuestion(),
+                                  ])}
+                                >
+                                  <Plus className="h-4 w-4 mr-2" /> Add More Questions
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+
                           {exercise.type === "coding" && (
                             <div className="space-y-3 bg-gray-50 rounded-xl p-3">
                               <div className="grid grid-cols-2 gap-3">
@@ -2767,7 +3244,8 @@ function SectionModal({
                           )}
                         </div>
                       </div>
-                    ))}
+                    );
+                  })}
                   </div>
                   
                   <div className="text-sm text-gray-600 bg-green-50 p-3 rounded-xl">

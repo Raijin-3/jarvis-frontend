@@ -21,11 +21,11 @@ async function getAuthHeaders() {
 // GET /api/admin/users/[id] - Get specific user
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const headers = await getAuthHeaders()
-    const { id } = params
+    const { id } = await params
 
     const response = await fetch(`${API_BASE_URL}/v1/admin/users/${id}`, {
       headers,
@@ -50,11 +50,11 @@ export async function GET(
 // PUT /api/admin/users/[id] - Update user
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const headers = await getAuthHeaders()
-    const { id } = params
+    const { id } = await params
     const body = await request.json()
 
     const response = await fetch(`${API_BASE_URL}/v1/admin/users/${id}`, {
@@ -82,11 +82,11 @@ export async function PUT(
 // DELETE /api/admin/users/[id] - Delete user
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const headers = await getAuthHeaders()
-    const { id } = params
+    const { id } = await params
 
     const response = await fetch(`${API_BASE_URL}/v1/admin/users/${id}`, {
       method: 'DELETE',

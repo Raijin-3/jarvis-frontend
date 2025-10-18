@@ -5,9 +5,10 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const sb = supabaseServer()
     const { data: { user }, error: authError } = await sb.auth.getUser()
     
@@ -26,7 +27,7 @@ export async function GET(
       return NextResponse.json({ error: "No session token" }, { status: 401 })
     }
 
-    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${params.id}`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${id}`, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${session.access_token}`,
@@ -52,9 +53,10 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const sb = supabaseServer()
     const { data: { user }, error: authError } = await sb.auth.getUser()
     
@@ -75,7 +77,7 @@ export async function PUT(
 
     const body = await request.json()
 
-    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${params.id}`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${id}`, {
       method: "PUT",
       headers: {
         "Authorization": `Bearer ${session.access_token}`,
@@ -102,9 +104,10 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const sb = supabaseServer()
     const { data: { user }, error: authError } = await sb.auth.getUser()
     
@@ -123,7 +126,7 @@ export async function DELETE(
       return NextResponse.json({ error: "No session token" }, { status: 401 })
     }
 
-    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${params.id}`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/course-assignments/${id}`, {
       method: "DELETE",
       headers: {
         "Authorization": `Bearer ${session.access_token}`,

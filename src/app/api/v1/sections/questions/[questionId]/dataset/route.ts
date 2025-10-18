@@ -5,10 +5,10 @@ export const runtime = 'nodejs';
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { questionId: string } }
+  { params }: { params: Promise<{ questionId: string }> }
 ) {
   try {
-    const { questionId } = params;
+    const { questionId } = await params;
     if (!questionId) {
       return NextResponse.json(
         { error: 'Question ID is required' },

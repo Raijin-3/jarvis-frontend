@@ -3,11 +3,12 @@ import { API_BASE_URL, buildAuthHeaders } from '../../../helpers'
 
 export async function PUT(
   _request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const headers = await buildAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/questions/${params.id}/toggle-status`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/questions/${id}/toggle-status`, {
       method: 'PUT',
       headers,
     })

@@ -3,9 +3,10 @@ import { supabaseServer } from "@/lib/supabase-server"
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const sb = supabaseServer()
     const { data: { user }, error: authError } = await sb.auth.getUser()
     
@@ -35,20 +36,20 @@ export async function POST(
 
     // Check if external API is available or return mock enrollment response
     if (!process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL === 'http://localhost:8080') {
-      console.warn("External API not configured, returning mock enrollment success for path:", params.id)
+      console.warn("External API not configured, returning mock enrollment success for path:", id)
       
       // Return mock enrollment response
       return NextResponse.json({
         success: true,
         message: "Successfully enrolled in learning path",
-        path_id: params.id,
+        path_id: id,
         user_id: user.id,
         enrolled_at: new Date().toISOString()
       })
     }
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${params.id}/enroll`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${id}/enroll`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

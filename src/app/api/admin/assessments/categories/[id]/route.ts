@@ -3,12 +3,13 @@ import { API_BASE_URL, buildAuthHeaders } from '../../helpers'
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const headers = await buildAuthHeaders({ 'Content-Type': 'application/json' })
     const body = await request.json()
-    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/categories/${params.id}`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/categories/${id}`, {
       method: 'PUT',
       headers,
       body: JSON.stringify(body),
@@ -29,11 +30,12 @@ export async function PUT(
 
 export async function DELETE(
   _request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const headers = await buildAuthHeaders()
-    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/categories/${params.id}`, {
+    const response = await fetch(`${API_BASE_URL}/v1/admin/assessments/categories/${id}`, {
       method: 'DELETE',
       headers,
     })

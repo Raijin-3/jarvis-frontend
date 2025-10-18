@@ -3,9 +3,10 @@ import { supabaseServer } from "@/lib/supabase-server"
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const sb = supabaseServer()
     const { data: { user }, error: authError } = await sb.auth.getUser()
     
@@ -34,7 +35,7 @@ export async function GET(
     }
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${params.id}/with-courses`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/learning-paths/${id}/with-courses`, {
         headers: {
           "Authorization": `Bearer ${token}`,
         },
