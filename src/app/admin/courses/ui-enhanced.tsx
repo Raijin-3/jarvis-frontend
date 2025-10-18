@@ -827,6 +827,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 targetSectionId = newSection?.id;
               } else {
                 // Update existing section metadata
+                console.log("data", data);
                 const res = await fetch(`/api/admin/sections/${editingSection.id}`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
