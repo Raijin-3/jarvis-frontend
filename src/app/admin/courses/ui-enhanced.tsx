@@ -30,6 +30,7 @@ import {
   HelpCircle,
   Upload
 } from "lucide-react";
+import { RichTextEditor, FormattedText } from "@/components/ui/rich-text-editor";
 
 /* =========================
    Types
@@ -124,6 +125,26 @@ function normalizeCourseFull(input: unknown): CourseFull {
     subjects: Array.isArray(c.subjects) ? c.subjects : [],
   };
 }
+
+const EMPTY_RICH_TEXT = "<p></p>";
+
+const isRichTextEmpty = (value: unknown): boolean => {
+  if (typeof value !== 'string') return true;
+  const normalized = value
+    .replace(/<p><br\s*\/?><\/p>/gi, '')
+    .replace(/<p>\s*<\/p>/gi, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .trim();
+  return normalized.length === 0;
+};
+
+const ensureRichText = (value: unknown): string => {
+  if (typeof value !== 'string' || isRichTextEmpty(value)) {
+    return EMPTY_RICH_TEXT;
+  }
+  return value;
+};
 
 
 const lectureTypes = ['text', 'video', 'image', 'audio', 'pdf'] as const;
@@ -926,34 +947,42 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                 const normalizedSubmitted = Array.isArray(submittedQuestions)
                   ? submittedQuestions
                       .map((question: any, index: number) => {
-                        const text =
-                          typeof question?.text === 'string'
-                            ? question.text.trim()
-                            : '';
-                        if (!text) return null;
-                        const options = Array.isArray(question?.answers)
-                          ? question.answers
-                              .map((answer: any, optionIndex: number) => {
-                                const answerText =
-                                  typeof answer?.text === 'string'
-                                    ? answer.text.trim()
-                                    : '';
-                                if (!answerText) return null;
-                                return {
-                                  id:
-                                    typeof answer?.id === 'string'
-                                      ? answer.id
-                                      : undefined,
-                                  text: answerText,
-                                  correct: answer?.correct === true,
-                                  order_index:
-                                    typeof answer?.order_index === 'number'
-                                      ? answer.order_index
-                                      : optionIndex + 1,
-                                };
-                              })
-                              .filter((option: any) => option !== null)
-                          : [];
+                        const text = typeof question?.text === 'string' ? question.text : '';
+                        if (isRichTextEmpty(text)) return null;
+
+                        const optionSource = Array.isArray(question?.options)
+                          ? question.options
+                          : Array.isArray(question?.answers)
+                            ? question.answers
+                            : [];
+
+                        const options = optionSource
+                          .map((option: any, optionIndex: number) => {
+                            const optionText =
+                              typeof option?.text === 'string'
+                                ? option.text
+                                : typeof option?.answer_text === 'string'
+                                  ? option.answer_text
+                                  : '';
+                            if (isRichTextEmpty(optionText)) return null;
+                            const isCorrect =
+                              option?.correct === true ||
+                              option?.is_correct === true ||
+                              option?.isCorrect === true;
+                            return {
+                              id: typeof option?.id === 'string' ? option.id : undefined,
+                              text: optionText,
+                              correct: isCorrect,
+                              order_index:
+                                typeof option?.order_index === 'number'
+                                  ? option.order_index
+                                  : optionIndex + 1,
+                            };
+                          })
+                          .filter((option: any) => option !== null);
+
+                        if (options.length === 0) return null;
+
                         return {
                           id:
                             typeof question?.id === 'string'
@@ -1019,16 +1048,13 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                       : [];
                   const options = optionSource.map((option: any, optionIndex: number) => ({
                     id: typeof option?.id === 'string' ? option.id : undefined,
-                    text:
-                      typeof option?.text === 'string'
-                        ? option.text.trim()
-                        : '',
+                    text: typeof option?.text === 'string' ? option.text : '',
                     correct: option?.correct === true,
                     order_index:
                       typeof option?.order_index === 'number'
                         ? option.order_index
                         : optionIndex + 1,
-                  })).filter((option: any) => option.text !== '');
+                  })).filter((option: any) => !isRichTextEmpty(option.text));
                   const payload = {
                     text: question.text,
                     type: 'mcq',
@@ -1045,8 +1071,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                       .filter(
                         (option: any) =>
                           option.correct === true &&
-                          typeof option.text === 'string' &&
-                          option.text.trim() !== '',
+                          !isRichTextEmpty(option.text),
                       )
                       .map((option: any) => ({
                         answer_text: option.text,
@@ -1296,20 +1321,29 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                   const existingQuestions = Array.isArray(existingQuiz?.questions) ? existingQuiz.questions : [];
                   const existingQuestionMap = new Map(existingQuestions.map((question: any) => [question.id, question]));
                   const normalizedQuestions = submittedQuestions
-                    .filter((question: any) => (question?.text || '').trim() !== '')
-                    .map((question: any, index: number) => ({
-                      id: typeof question.id === 'string' ? question.id : undefined,
-                      text: question.text ?? '',
-                      type: question.type ?? 'mcq',
-                      order: typeof question.order_index === 'number' ? question.order_index : index + 1,
-                      options: Array.isArray(question.options)
-                        ? question.options.map((option: any) => ({
-                            id: typeof option.id === 'string' ? option.id : undefined,
-                            text: option.text ?? '',
-                            correct: !!option.correct,
-                          }))
-                        : [],
-                    }));
+                    .map((question: any, index: number) => {
+                      const questionText = typeof question?.text === 'string' ? question.text : '';
+                      if (isRichTextEmpty(questionText)) return null;
+                      const type = question.type ?? 'mcq';
+                      const options = Array.isArray(question.options)
+                        ? question.options
+                            .map((option: any) => ({
+                              id: typeof option.id === 'string' ? option.id : undefined,
+                              text: typeof option.text === 'string' ? option.text : '',
+                              correct: !!option.correct,
+                            }))
+                            .filter((option: any) => !isRichTextEmpty(option.text))
+                        : [];
+                      if (type === 'mcq' && options.length === 0) return null;
+                      return {
+                        id: typeof question.id === 'string' ? question.id : undefined,
+                        text: questionText,
+                        type,
+                        order: typeof question.order_index === 'number' ? question.order_index : index + 1,
+                        options,
+                      };
+                    })
+                    .filter((question: any) => question !== null);
 
                   const questionIds = new Set(
                     normalizedQuestions
@@ -1412,7 +1446,7 @@ export function EnhancedCourseManager({ initialCourses }: { initialCourses: Cour
                     }
 
                     for (const option of question.options) {
-                      if (!option.text || option.text.trim() === '') continue;
+                      if (isRichTextEmpty(option.text)) continue;
                       if (option.id && existingOptionMap.has(option.id)) {
                         const updateOptionRes = await fetch(`/api/admin/options/${option.id}`, {
                           method: 'PUT',
@@ -1896,9 +1930,10 @@ function EnhancedCourseDetailsPanel({
                                                       {practice?.title || `Exercise ${practiceIndex + 1}`}
                                                     </div>
                                                     {practice?.content && (
-                                                      <div className="text-xs text-gray-500 line-clamp-3">
-                                                        {practice.content}
-                                                      </div>
+                                                      <FormattedText
+                                                        content={practice.content}
+                                                        className="text-xs text-gray-500 line-clamp-3"
+                                                      />
                                                     )}
                                                   </div>
                                                 </div>
@@ -2362,13 +2397,13 @@ function SectionModal({
 
   const createEmptyAnswer = (correct = false): ExerciseAnswerForm => ({
     id: uniqueId('ans'),
-    text: '',
+    text: EMPTY_RICH_TEXT,
     correct,
   });
 
   const createEmptyQuestion = (): ExerciseQuestionForm => ({
     id: uniqueId('q'),
-    text: '',
+    text: EMPTY_RICH_TEXT,
     answers: [createEmptyAnswer(), createEmptyAnswer()],
   });
   const [formData, setFormData] = useState({
@@ -2414,10 +2449,16 @@ function SectionModal({
       const items: QuizQuestionForm[] = (section.quiz.questions as Record<string, unknown>[]).map((q: Record<string, unknown>) => ({
         id: q.id as string,
         type: (q.type as string) || 'mcq',
-        text: (q.text as string) || '',
-        hint: (q.hint as string) || '',
-        explanation: (q.explanation as string) || '',
-        options: Array.isArray(q.options) ? (q.options as Record<string, unknown>[]).map((o: Record<string, unknown>) => ({ id: o.id as string, text: (o.text as string) || '', correct: !!o.correct })) : [],
+        text: ensureRichText(q.text),
+        hint: ensureRichText(q.hint),
+        explanation: ensureRichText(q.explanation),
+        options: Array.isArray(q.options)
+          ? (q.options as Record<string, unknown>[]).map((o: Record<string, unknown>) => ({
+              id: o.id as string,
+              text: ensureRichText(o.text),
+              correct: !!o.correct,
+            }))
+          : [],
         correctAnswers: Array.isArray(q.correctAnswers) ? q.correctAnswers as string[] : [],
         language: q.language as string,
         codeTemplate: (q.content as string) || '',
@@ -2460,13 +2501,13 @@ function SectionModal({
               : [];
           const answers = optionSource.map((option) => ({
             id: typeof option.id === 'string' ? option.id : uniqueId('ans'),
-            text: typeof option.text === 'string' ? option.text : '',
+            text: ensureRichText(option.text),
             correct: option.correct === true,
           }));
 
           return {
             id: typeof q.id === 'string' ? q.id : uniqueId('q'),
-            text: typeof q.text === 'string' ? q.text : '',
+            text: ensureRichText(q.text),
             answers: answers.length > 0 ? answers : [createEmptyAnswer(), createEmptyAnswer()],
           };
         });
@@ -2528,18 +2569,93 @@ function SectionModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
+
+    const normalizedQuizQuestions = formData.quizItems.reduce((acc, q) => {
+      if (isRichTextEmpty(q.text)) {
+        return acc;
+      }
+
+      const hint = isRichTextEmpty(q.hint) ? undefined : q.hint;
+      const explanation = isRichTextEmpty(q.explanation) ? undefined : q.explanation;
+
+      const normalizedQuestion: {
+        id: string;
+        text: string;
+        type: typeof q.type;
+        order_index: number;
+        hint?: string;
+        explanation?: string;
+        content?: string;
+        language?: string;
+        correctAnswers?: string[];
+        options?: { id: string; text: string; correct: boolean; order_index: number }[];
+      } = {
+        id: q.id,
+        text: q.text,
+        type: q.type,
+        order_index: acc.length + 1,
+        hint,
+        explanation,
+        content: q.codeTemplate,
+        language: q.language,
+        correctAnswers: q.correctAnswers,
+      };
+
+      if (q.type === 'mcq') {
+        const normalizedOptions = q.options
+          .filter((option) => !isRichTextEmpty(option.text))
+          .map((option, optionIdx) => ({
+            id: option.id,
+            text: option.text,
+            correct: option.correct,
+            order_index: optionIdx + 1,
+          }));
+
+        if (normalizedOptions.length === 0) {
+          return acc;
+        }
+
+        normalizedQuestion.options = normalizedOptions;
+      }
+
+      acc.push(normalizedQuestion);
+      return acc;
+    }, [] as Array<{
+      id: string;
+      text: string;
+      type: typeof formData.quizItems[number]['type'];
+      order_index: number;
+      hint?: string;
+      explanation?: string;
+      content?: string;
+      language?: string;
+      correctAnswers?: string[];
+      options?: { id: string; text: string; correct: boolean; order_index: number }[];
+    }>);
+
+    const quizPayload =
+      formData.hasQuiz && normalizedQuizQuestions.length > 0
+        ? {
+            id: `quiz-${Date.now()}`,
+            title: formData.quizTitle,
+            totalQuestions: normalizedQuizQuestions.length,
+            questions: normalizedQuizQuestions,
+          }
+        : null;
+
     const sectionData: Partial<Section> = {
       title: formData.title,
       status: formData.status,
       // Multi-lecture support - use first lecture for backward compatibility or create new structure
-      lecture: formData.lectureItems.length > 0 ? {
-        title: formData.lectureItems[0].title,
-        content: formData.lectureItems[0].content,
-        duration: formData.lectureItems[0].duration,
-        type: formData.lectureItems[0].type,
-        url: formData.lectureItems[0].url,
-      } : null,
+      lecture: formData.lectureItems.length > 0
+        ? {
+            title: formData.lectureItems[0].title,
+            content: formData.lectureItems[0].content,
+            duration: formData.lectureItems[0].duration,
+            type: formData.lectureItems[0].type,
+            url: formData.lectureItems[0].url,
+          }
+        : null,
       // Multi-lecture data for enhanced storage
       lectures: formData.lectureItems.map((lecture, idx) => ({
         id: lecture.id,
@@ -2550,51 +2666,59 @@ function SectionModal({
         url: lecture.url,
         order_index: idx + 1,
       })),
-      // Multi-exercise support 
-      practices: formData.exerciseItems.map((exercise, idx) => ({
-        id: exercise.id,
-        title: exercise.title,
-        content: exercise.description,
-        difficulty: exercise.difficulty,
-        type: exercise.type,
-        points: exercise.points,
-        timeLimit: exercise.timeLimit,
-        instructions: exercise.instructions,
-        starterCode: exercise.starterCode,
-        language: exercise.language,
-        expectedOutput: exercise.expectedOutput,
-        order_index: idx + 1,
-        questions: exercise.questions.map((question, qIdx) => ({
-          id: question.id,
-          text: question.text,
-          order_index: qIdx + 1,
-          options: question.answers.map((answer, aIdx) => ({
-            id: answer.id,
-            text: answer.text,
-            correct: answer.correct,
-            order_index: aIdx + 1,
-          })),
-        })),
-      })),
-      quiz: formData.quizItems.length > 0 ? {
-        id: `quiz-${Date.now()}`,
-        title: formData.quizTitle,
-        totalQuestions: formData.quizItems.length,
-        questions: formData.quizItems.map((q, idx) => ({
-          id: q.id,
-          text: q.text,
-          type: q.type,
+      // Multi-exercise support
+      practices: formData.exerciseItems.map((exercise, idx) => {
+        const normalizedQuestions = exercise.questions.reduce((acc, question) => {
+          if (isRichTextEmpty(question.text)) {
+            return acc;
+          }
+          const normalizedAnswers = question.answers.filter((answer) => !isRichTextEmpty(answer.text));
+          if (normalizedAnswers.length === 0) {
+            return acc;
+          }
+          acc.push({
+            id: question.id,
+            text: question.text,
+            order_index: acc.length + 1,
+            options: normalizedAnswers.map((answer, answerIdx) => ({
+              id: answer.id,
+              text: answer.text,
+              correct: answer.correct,
+              order_index: answerIdx + 1,
+            })),
+          });
+          return acc;
+        }, [] as {
+          id: string;
+          text: string;
+          order_index: number;
+          options: {
+            id: string;
+            text: string;
+            correct: boolean;
+            order_index: number;
+          }[];
+        }[]);
+
+        return {
+          id: exercise.id,
+          title: exercise.title,
+          content: exercise.description,
+          difficulty: exercise.difficulty,
+          type: exercise.type,
+          points: exercise.points,
+          timeLimit: exercise.timeLimit,
+          instructions: exercise.instructions,
+          starterCode: exercise.starterCode,
+          language: exercise.language,
+          expectedOutput: exercise.expectedOutput,
           order_index: idx + 1,
-          hint: q.hint,
-          explanation: q.explanation,
-          content: q.codeTemplate,
-          language: q.language,
-          correctAnswers: q.correctAnswers,
-          options: q.type === 'mcq' ? q.options : undefined,
-        }))
-      } : null
+          questions: normalizedQuestions,
+        };
+      }),
+      quiz: quizPayload,
     };
-    
+
     onSubmit(sectionData);
   };
 
@@ -3044,16 +3168,16 @@ function SectionModal({
                                     <div className="space-y-2">
                                       <div>
                                         <Label className="text-xs text-gray-500">Prompt</Label>
-                                        <Input
-                                          value={question.text}
-                                          onChange={(e) =>
+                                        <RichTextEditor
+                                          content={question.text || EMPTY_RICH_TEXT}
+                                          onChange={(content) =>
                                             updateExerciseQuestions(ei, (questions) => {
                                               const next = [...questions];
                                               const current = next[qi];
                                               if (current) {
-                                                next[qi] = { ...current, text: e.target.value };
+                                                next[qi] = { ...current, text: content };
                                               } else {
-                                                next[qi] = { ...createEmptyQuestion(), text: e.target.value };
+                                                next[qi] = { ...createEmptyQuestion(), text: content };
                                               }
                                               return next;
                                             })
@@ -3066,10 +3190,34 @@ function SectionModal({
                                       <div className="space-y-2">
                                         <Label className="text-xs text-gray-500">Answers</Label>
                                         {question.answers.map((answer, ai) => (
-                                          <div key={answer.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2">
-                                            <Input
-                                              value={answer.text}
-                                              onChange={(e) =>
+                                          <div key={answer.id} className="space-y-2 rounded-lg border border-gray-200 bg-white p-3">
+                                            <div className="flex items-center justify-between">
+                                              <span className="text-xs font-medium text-gray-600">Answer {ai + 1}</span>
+                                              <label className="inline-flex items-center gap-1 text-xs text-gray-600">
+                                                <input
+                                                  type="checkbox"
+                                                  className="rounded border-gray-300"
+                                                  checked={answer.correct}
+                                                  onChange={(e) =>
+                                                    updateExerciseQuestions(ei, (questions) => {
+                                                      const next = [...questions];
+                                                      const current = next[qi] ?? createEmptyQuestion();
+                                                      const answers = Array.isArray(current.answers)
+                                                        ? [...current.answers]
+                                                        : [];
+                                                      const existingAnswer = answers[ai] ?? createEmptyAnswer();
+                                                      answers[ai] = { ...existingAnswer, correct: e.target.checked };
+                                                      next[qi] = { ...current, answers };
+                                                      return next;
+                                                    })
+                                                  }
+                                                />
+                                                Correct
+                                              </label>
+                                            </div>
+                                            <RichTextEditor
+                                              content={answer.text || EMPTY_RICH_TEXT}
+                                              onChange={(content) =>
                                                 updateExerciseQuestions(ei, (questions) => {
                                                   const next = [...questions];
                                                   const current = next[qi] ?? createEmptyQuestion();
@@ -3078,36 +3226,15 @@ function SectionModal({
                                                     : [];
                                                   const existingAnswer = answers[ai];
                                                   answers[ai] = existingAnswer
-                                                    ? { ...existingAnswer, text: e.target.value }
-                                                    : { ...createEmptyAnswer(), text: e.target.value };
+                                                    ? { ...existingAnswer, text: content }
+                                                    : { ...createEmptyAnswer(), text: content };
                                                   next[qi] = { ...current, answers };
                                                   return next;
                                                 })
                                               }
                                               placeholder={`Answer option ${ai + 1}`}
-                                              className="flex-1 rounded-lg"
+                                              className="rounded-lg"
                                             />
-                                            <label className="inline-flex items-center gap-1 text-xs text-gray-600">
-                                              <input
-                                                type="checkbox"
-                                                className="rounded border-gray-300"
-                                                checked={answer.correct}
-                                                onChange={(e) =>
-                                                  updateExerciseQuestions(ei, (questions) => {
-                                                    const next = [...questions];
-                                                    const current = next[qi] ?? createEmptyQuestion();
-                                                    const answers = Array.isArray(current.answers)
-                                                      ? [...current.answers]
-                                                      : [];
-                                                    const existingAnswer = answers[ai] ?? createEmptyAnswer();
-                                                    answers[ai] = { ...existingAnswer, correct: e.target.checked };
-                                                    next[qi] = { ...current, answers };
-                                                    return next;
-                                                  })
-                                                }
-                                              />
-                                              Correct
-                                            </label>
                                             {question.answers.length > 1 && (
                                               <Button
                                                 type="button"
@@ -3346,27 +3473,26 @@ function SectionModal({
                           <div className="space-y-3">
                             <div>
                               <Label>Question Text</Label>
-                              <textarea
-                                value={q.text}
-                                onChange={(e) => setFormData(prev => {
+                              <RichTextEditor
+                                content={q.text || EMPTY_RICH_TEXT}
+                                onChange={(content) => setFormData(prev => {
                                   const quizItems = [...prev.quizItems];
-                                  quizItems[qi] = { ...q, text: e.target.value };
+                                  quizItems[qi] = { ...q, text: content };
                                   return { ...prev, quizItems };
                                 })}
                                 placeholder="Enter the question prompt..."
-                                rows={2}
-                                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm focus:border-[hsl(var(--brand))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--brand))]/20 resize-none"
+                                className="rounded-xl"
                               />
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               <div>
                                 <Label>Hint (optional)</Label>
-                                <Input
-                                  value={q.hint || ""}
-                                  onChange={(e) => setFormData(prev => {
+                                <RichTextEditor
+                                  content={q.hint || EMPTY_RICH_TEXT}
+                                  onChange={(content) => setFormData(prev => {
                                     const quizItems = [...prev.quizItems];
-                                    quizItems[qi] = { ...q, hint: e.target.value };
+                                    quizItems[qi] = { ...q, hint: content };
                                     return { ...prev, quizItems };
                                   })}
                                   placeholder="Add a hint"
@@ -3375,11 +3501,11 @@ function SectionModal({
                               </div>
                               <div>
                                 <Label>Explanation (optional)</Label>
-                                <Input
-                                  value={q.explanation || ""}
-                                  onChange={(e) => setFormData(prev => {
+                                <RichTextEditor
+                                  content={q.explanation || EMPTY_RICH_TEXT}
+                                  onChange={(content) => setFormData(prev => {
                                     const quizItems = [...prev.quizItems];
-                                    quizItems[qi] = { ...q, explanation: e.target.value };
+                                    quizItems[qi] = { ...q, explanation: content };
                                     return { ...prev, quizItems };
                                   })}
                                   placeholder="Add an explanation"
@@ -3393,44 +3519,55 @@ function SectionModal({
                                 <Label>Options</Label>
                                 <div className="space-y-2">
                                   {q.options.map((opt, oi) => (
-                                    <div key={opt.id} className="flex items-center gap-2">
-                                      <input
-                                        type="checkbox"
-                                        checked={opt.correct}
-                                        onChange={(e) => setFormData(prev => {
+                                    <div key={opt.id} className="space-y-2 rounded-lg border border-gray-200 bg-white p-3">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-medium text-gray-600">Option {oi + 1}</span>
+                                        <div className="flex items-center gap-2">
+                                          <label className="inline-flex items-center gap-1 text-xs text-gray-600">
+                                            <input
+                                              type="checkbox"
+                                              checked={opt.correct}
+                                              onChange={(e) => setFormData(prev => {
+                                                const quizItems = [...prev.quizItems];
+                                                const options = [...q.options];
+                                                options[oi] = { ...opt, correct: e.target.checked };
+                                                quizItems[qi] = { ...q, options };
+                                                return { ...prev, quizItems };
+                                              })}
+                                              className="rounded border-gray-300"
+                                            />
+                                            Correct
+                                          </label>
+                                          {q.options.length > 2 && (
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="sm"
+                                              className="text-red-500 hover:text-red-600"
+                                              onClick={() => setFormData(prev => {
+                                                const quizItems = [...prev.quizItems];
+                                                const options = q.options.filter((_, i) => i !== oi);
+                                                quizItems[qi] = { ...q, options };
+                                                return { ...prev, quizItems };
+                                              })}
+                                            >
+                                              <Trash2 className="h-4 w-4" />
+                                            </Button>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <RichTextEditor
+                                        content={opt.text || EMPTY_RICH_TEXT}
+                                        onChange={(content) => setFormData(prev => {
                                           const quizItems = [...prev.quizItems];
                                           const options = [...q.options];
-                                          options[oi] = { ...opt, correct: e.target.checked };
-                                          quizItems[qi] = { ...q, options };
-                                          return { ...prev, quizItems };
-                                        })}
-                                        className="rounded"
-                                      />
-                                      <Input
-                                        value={opt.text}
-                                        onChange={(e) => setFormData(prev => {
-                                          const quizItems = [...prev.quizItems];
-                                          const options = [...q.options];
-                                          options[oi] = { ...opt, text: e.target.value };
+                                          options[oi] = { ...opt, text: content };
                                           quizItems[qi] = { ...q, options };
                                           return { ...prev, quizItems };
                                         })}
                                         placeholder={`Option ${oi + 1}`}
-                                        className="flex-1 rounded-xl"
-                                      />
-                                      <Button
-                                        type="button"
-                                        variant="outline"
                                         className="rounded-xl"
-                                        onClick={() => setFormData(prev => {
-                                          const quizItems = [...prev.quizItems];
-                                          const options = q.options.filter((_, i) => i !== oi);
-                                          quizItems[qi] = { ...q, options };
-                                          return { ...prev, quizItems };
-                                        })}
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </Button>
+                                      />
                                     </div>
                                   ))}
                                 </div>
@@ -3445,7 +3582,7 @@ function SectionModal({
                                         ...q,
                                         options: [
                                           ...q.options,
-                                          { id: `o-${Date.now()}`, text: `Option ${q.options.length + 1}`, correct: false },
+                                          { id: `o-${Date.now()}`, text: EMPTY_RICH_TEXT, correct: false },
                                         ],
                                       };
                                       return { ...prev, quizItems };
@@ -3557,12 +3694,14 @@ function SectionModal({
                             {
                               id: `q-${Date.now()}`,
                               type: "mcq",
-                              text: "",
+                              text: EMPTY_RICH_TEXT,
+                              hint: EMPTY_RICH_TEXT,
+                              explanation: EMPTY_RICH_TEXT,
                               options: [
-                                { id: `o-${Date.now()}-1`, text: "Option 1", correct: false },
-                                { id: `o-${Date.now()}-2`, text: "Option 2", correct: false },
-                                { id: `o-${Date.now()}-3`, text: "Option 3", correct: false },
-                                { id: `o-${Date.now()}-4`, text: "Option 4", correct: false },
+                                { id: `o-${Date.now()}-1`, text: EMPTY_RICH_TEXT, correct: false },
+                                { id: `o-${Date.now()}-2`, text: EMPTY_RICH_TEXT, correct: false },
+                                { id: `o-${Date.now()}-3`, text: EMPTY_RICH_TEXT, correct: false },
+                                { id: `o-${Date.now()}-4`, text: EMPTY_RICH_TEXT, correct: false },
                               ],
                               correctAnswers: [],
                               language: "python",

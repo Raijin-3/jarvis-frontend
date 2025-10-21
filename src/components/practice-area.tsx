@@ -14,6 +14,7 @@ import {
   EyeOff,
   RefreshCw
 } from 'lucide-react';
+import { RichContent } from './rich-content';
 
 type PracticeQuestion = {
   id: string;
@@ -264,8 +265,8 @@ export function PracticeArea({
             </div>
 
             {/* Question Text */}
-            <div className="prose max-w-none">
-              <p className="text-gray-700 whitespace-pre-wrap">{currentQuestion.text}</p>
+            <div className="prose-content">
+              <RichContent content={currentQuestion.text} className="text-gray-700" />
             </div>
 
             {/* Dataset Section */}
@@ -339,9 +340,21 @@ export function PracticeArea({
                 </button>
                 {showHint && (
                   <div className="px-3 pb-3 text-sm text-yellow-700">
-                    {currentQuestion.hint}
+                    <RichContent content={currentQuestion.hint} className="text-yellow-700" />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Explanation Section */}
+            {currentQuestion.explanation && submissionResult && (
+              <div className="border border-blue-200 rounded-lg">
+                <div className="p-3 bg-blue-50">
+                  <span className="font-medium text-blue-800">📝 Explanation</span>
+                </div>
+                <div className="px-3 py-3 text-sm text-blue-900">
+                  <RichContent content={currentQuestion.explanation} className="text-blue-900" />
+                </div>
               </div>
             )}
 
@@ -430,13 +443,13 @@ export function PracticeArea({
                   </span>
                 </div>
                 {submissionResult.feedback ? (
-                  <p
+                  <div
                     className={`text-sm ${
                       submissionResult.isCorrect ? 'text-green-700' : 'text-red-700'
                     }`}
                   >
-                    {submissionResult.feedback}
-                  </p>
+                    <RichContent content={submissionResult.feedback} />
+                  </div>
                 ) : null}
               </div>
             ) : (

@@ -6578,15 +6578,15 @@ export function SubjectLearningInterface({
 
               <div className="text-right">
 
-                <div className="text-sm text-gray-600 mb-1">Progress</div>
+                {/* <div className="text-sm text-gray-600 mb-1">Progress</div> */}
 
-                <div className="text-2xl font-bold text-indigo-600">
+                {/* <div className="text-2xl font-bold text-indigo-600">
 
                   {completedSections}/{totalSections}
 
-                </div>
+                </div> */}
 
-                <div className="text-xs text-gray-500">lessons completed</div>
+                {/* <div className="text-xs text-gray-500">lessons completed</div> */}
 
               </div>
             </div>
