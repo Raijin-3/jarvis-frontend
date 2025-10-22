@@ -47,6 +47,7 @@ type ExecutionResult = {
 
 type DatasetCellValue = string | number | boolean | null;
 type DatasetRow = Record<string, DatasetCellValue>;
+type PythonLikeSubjectType = 'python' | 'statistics';
 
 interface DatasetSchemaInfo {
   dataset_rows?: unknown;
@@ -61,7 +62,7 @@ interface Dataset {
   id: string;
   name: string;
   description?: string;
-  subject_type: 'python';
+  subject_type?: PythonLikeSubjectType;
   file_url?: string;
   data_preview?: DatasetRow[];
   schema?: DatasetSchemaInfo;
@@ -144,6 +145,20 @@ if __name__ == "__main__":
     solution()
 `;
 
+const DEFAULT_STATISTICS_TEMPLATE = `# Statistics Practice Exercise
+# Use pandas and numpy for your analysis
+
+import pandas as pd
+import numpy as np
+
+def run_analysis():
+    # Your statistical analysis goes here
+    pass
+
+if __name__ == "__main__":
+    run_analysis()
+`;
+
 const getErrorMessage = (error: unknown, fallback = 'Execution failed'): string => {
   if (error instanceof Error) {
     return error.message;
@@ -170,6 +185,7 @@ export function PythonPracticeInterface({
   initialCode = "",
   title,
   description,
+  subjectType = 'python',
   onSubmit
 }: {
   exerciseId: string;
@@ -177,9 +193,16 @@ export function PythonPracticeInterface({
   initialCode?: string;
   title: string;
   description: string;
+  subjectType?: PythonLikeSubjectType;
   onSubmit?: (result: ExecutionResult) => void;
 }) {
-  const [code, setCode] = useState<string>(initialCode || DEFAULT_PYTHON_TEMPLATE);
+  const normalizedSubjectType: PythonLikeSubjectType =
+    subjectType === 'statistics' ? 'statistics' : 'python';
+  const defaultTemplate =
+    normalizedSubjectType === 'statistics'
+      ? DEFAULT_STATISTICS_TEMPLATE
+      : DEFAULT_PYTHON_TEMPLATE;
+  const [code, setCode] = useState<string>(initialCode || defaultTemplate);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
@@ -217,7 +240,7 @@ export function PythonPracticeInterface({
     if (questionId) {
       loadTestCases();
     }
-  }, [questionId]);
+  }, [questionId, normalizedSubjectType]);
 
   // Load datasets for the question
   useEffect(() => {
@@ -237,42 +260,58 @@ export function PythonPracticeInterface({
         };
 
         const normalized = Array.isArray(response.datasets)
-          ? response.datasets.map((dataset, index) => {
-              const schemaInfo = (dataset?.schema_info ?? dataset?.schema ?? {}) as DatasetSchemaInfo;
-              const csvRaw = dataset?.dataset_csv_raw ?? schemaInfo?.dataset_csv_raw ?? "";
-              const schemaRows = schemaInfo?.dataset_rows;
-              const schemaColumns = schemaInfo?.dataset_columns;
-              const resolvedData =
-                Array.isArray(dataset?.data) && dataset.data.length > 0
-                  ? dataset.data
-                  : Array.isArray(schemaRows)
-                  ? (schemaRows as DatasetRow[])
-                  : csvRaw
-                  ? parseCsvToObjects(csvRaw)
-                  : [];
-              const resolvedColumns =
-                Array.isArray(dataset?.columns) && dataset.columns.length > 0
-                  ? dataset.columns
-                  : Array.isArray(schemaColumns)
-                  ? (schemaColumns as string[])
-                  : resolvedData.length > 0
-                  ? Object.keys(resolvedData[0])
-                  : [];
-              const preferredTableName =
-                dataset?.table_name ||
-                schemaInfo?.dataset_table_name ||
-                schemaInfo?.table_name ||
-                dataset?.name ||
-                `dataset_${index + 1}`;
+          ? response.datasets
+              .filter((dataset) => {
+                const rawType =
+                  typeof dataset?.subject_type === 'string'
+                    ? dataset.subject_type
+                    : typeof (dataset as any)?.type === 'string'
+                      ? (dataset as any).type
+                      : typeof (dataset as any)?.question_type === 'string'
+                        ? (dataset as any).question_type
+                        : undefined;
+                if (!rawType) {
+                  return true;
+                }
+                const type = rawType.toLowerCase();
+                return type === 'python' || type === 'statistics';
+              })
+              .map((dataset, index) => {
+                const schemaInfo = (dataset?.schema_info ?? dataset?.schema ?? {}) as DatasetSchemaInfo;
+                const csvRaw = dataset?.dataset_csv_raw ?? schemaInfo?.dataset_csv_raw ?? "";
+                const schemaRows = schemaInfo?.dataset_rows;
+                const schemaColumns = schemaInfo?.dataset_columns;
+                const resolvedData =
+                  Array.isArray(dataset?.data) && dataset.data.length > 0
+                    ? dataset.data
+                    : Array.isArray(schemaRows)
+                    ? (schemaRows as DatasetRow[])
+                    : csvRaw
+                    ? parseCsvToObjects(csvRaw)
+                    : [];
+                const resolvedColumns =
+                  Array.isArray(dataset?.columns) && dataset.columns.length > 0
+                    ? dataset.columns
+                    : Array.isArray(schemaColumns)
+                    ? (schemaColumns as string[])
+                    : resolvedData.length > 0
+                    ? Object.keys(resolvedData[0])
+                    : [];
+                const preferredTableName =
+                  dataset?.table_name ||
+                  schemaInfo?.dataset_table_name ||
+                  schemaInfo?.table_name ||
+                  dataset?.name ||
+                  `dataset_${index + 1}`;
 
-              return {
-                ...dataset,
-                data: resolvedData,
-                columns: resolvedColumns,
-                table_name: getUniqueTableName(preferredTableName, index + 1),
-                dataset_csv_raw: csvRaw || undefined,
-              };
-            })
+                return {
+                  ...dataset,
+                  data: resolvedData,
+                  columns: resolvedColumns,
+                  table_name: getUniqueTableName(preferredTableName, index + 1),
+                  dataset_csv_raw: csvRaw || undefined,
+                };
+              })
           : [];
         setDatasets(normalized);
         setDatasetsLoaded(false);
@@ -342,52 +381,50 @@ export function PythonPracticeInterface({
 
         setDatasetsLoaded(true);
 
-        // Pre-populate code editor with imports and dataset info
+        // Pre-populate code editor with dataset summary
         if (loadedDatasetInfo.length > 0) {
-          const preloadedCode = `import pandas as pd
-import numpy as np
+          const datasetSummary = loadedDatasetInfo
+            .map(
+              (ds) =>
+                `# - ${ds.name}: ${ds.rows} rows x ${ds.columns.length} columns`,
+            )
+            .join('\n');
+          const datasetColumnsSummary = loadedDatasetInfo
+            .map((ds) => `#   Columns: ${ds.columns.join(', ')}`)
+            .join('\n');
+          const summaryBlock = `# Datasets loaded:\n${datasetSummary}\n${datasetColumnsSummary}\n\n`;
+          setCode(`${summaryBlock}${defaultTemplate}`);
 
-# Datasets loaded:
-${loadedDatasetInfo.map(ds => `# - ${ds.name}: ${ds.rows} rows × ${ds.columns.length} columns`).join('\n')}
-${loadedDatasetInfo.map(ds => `#   Columns: ${ds.columns.join(', ')}`).join('\n')}
-
-# Write your code below:
-def solution():
-    # Your code here
-    pass
-
-# Test your solution
-if __name__ == "__main__":
-    solution()
-`;
-          setCode(preloadedCode);
-          
           // Display dataset info in output
-          const outputMessages = loadedDatasetInfo.map(ds => 
-            `✓ Dataset '${ds.name}' loaded: ${ds.rows} rows × ${ds.columns.length} columns\n  Columns: ${ds.columns.join(', ')}`
-          ).join('\n\n');
-          
-          setStdout(`📊 Datasets loaded successfully!\n\n${outputMessages}\n\nYou can now use these DataFrames in your Python code.`);
-        }
+          const outputMessages = loadedDatasetInfo
+            .map(
+              (ds) =>
+                `Dataset '${ds.name}' loaded: ${ds.rows} rows x ${ds.columns.length} columns\nColumns: ${ds.columns.join(', ')}`,
+            )
+            .join('\n\n');
 
+          setStdout(
+            `Datasets loaded successfully!\n\n${outputMessages}\n\nYou can now use these DataFrames in your Pyodide environment.`,
+          );
+        }
         if (successfulLoads > 0 && failedDatasets.length === 0) {
           toast.success('Datasets loaded successfully');
         } else if (successfulLoads > 0) {
           toast(`Loaded ${successfulLoads} dataset(s), but failed to load: ${failedDatasets.join(', ')}`);
         } else if (failedDatasets.length > 0) {
-          toast.error('Failed to load datasets into Python environment');
+          toast.error('Failed to load datasets into Pyodide environment');
         } else {
-          toast('Datasets fetched, but no rows were provided to load into Python');
+          toast('Datasets fetched, but no rows were provided to load into Pyodide');
         }
       } catch (error) {
         console.error('Failed to initialize datasets:', error);
-        toast.error('Failed to load datasets into Python environment');
+        toast.error('Failed to load datasets into Pyodide environment');
         setDatasetsLoaded(true);
       }
     };
 
     initializeDatasets();
-  }, [pyodideReady, datasets, datasetsLoaded, loadPackage, loadDataFrame]);
+  }, [pyodideReady, datasets, datasetsLoaded, loadPackage, loadDataFrame, defaultTemplate]);
 
   // Execute code against test cases
   const executeAgainstTestCases = useCallback(async (userCode: string): Promise<TestCase[]> => {
@@ -613,9 +650,9 @@ ${userCode}
 
   // Reset code
   const resetCode = () => {
-    setCode(DEFAULT_PYTHON_TEMPLATE);
+    setCode(defaultTemplate);
     if (editorRef.current) {
-      editorRef.current.value = DEFAULT_PYTHON_TEMPLATE;
+      editorRef.current.value = defaultTemplate;
     }
     setExecutionResult(null);
     setStdout('');

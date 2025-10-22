@@ -1698,6 +1698,8 @@ export function SubjectLearningInterface({
   }, [selectedQuestionForPopup]);
 
   const isSpreadsheetQuestion = selectedQuestionType === "google_sheets";
+  const isPythonLikeQuestion =
+    selectedQuestionType === "python" || selectedQuestionType === "statistics";
 
 
   // Function to fetch exercise datasets
@@ -3293,8 +3295,8 @@ export function SubjectLearningInterface({
         return;
       }
 
-      if (selectedQuestionType && selectedQuestionType !== "python") {
-        setPythonError("Python execution is only available for Python questions.");
+      if (selectedQuestionType && !isPythonLikeQuestion) {
+        setPythonError("Python execution is only available for Python or Statistics questions.");
         return;
       }
 
@@ -3328,6 +3330,7 @@ export function SubjectLearningInterface({
       isExecutingPython,
       markQuestionCompleted,
       selectedQuestionForPopup,
+      isPythonLikeQuestion,
       selectedQuestionType,
     ],
   );
@@ -3343,7 +3346,7 @@ export function SubjectLearningInterface({
 
       if (questionType === "sql") {
         await handleExecuteSQL(code);
-      } else if (questionType === "python") {
+      } else if (questionType === "python" || questionType === "statistics") {
         await handleExecutePython(code);
       } else {
         // For other question types, show an appropriate message
@@ -3743,7 +3746,7 @@ export function SubjectLearningInterface({
       : null;
 
   const availablePythonDatasets = useMemo(() => {
-    if (selectedQuestionType !== "python") {
+    if (!isPythonLikeQuestion) {
       return [] as PythonDatasetDefinition[];
     }
 
@@ -3808,7 +3811,15 @@ export function SubjectLearningInterface({
     }
 
     exerciseDatasetList.forEach((dataset: any, index: number) => {
-      if (dataset?.subject_type && dataset.subject_type !== "python") {
+      const rawSubject =
+        typeof dataset?.subject_type === "string"
+          ? dataset.subject_type.toLowerCase()
+          : undefined;
+      if (
+        rawSubject &&
+        rawSubject !== "python" &&
+        rawSubject !== "statistics"
+      ) {
         return;
       }
       pushDataset({
@@ -3828,7 +3839,7 @@ export function SubjectLearningInterface({
     });
 
     return datasets;
-  }, [selectedQuestionType, questionDataset, selectedQuestionForPopup, exerciseDatasetList]);
+  }, [isPythonLikeQuestion, questionDataset, selectedQuestionForPopup, exerciseDatasetList]);
 
   const sqlDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
     if (selectedQuestionType !== "sql") {
@@ -3885,7 +3896,7 @@ export function SubjectLearningInterface({
   }, [availableSqlDatasets, duckDbDatasetTables, selectedQuestionType]);
 
   const pythonDatasetDetails = useMemo(() => {
-    if (selectedQuestionType !== "python") {
+    if (!isPythonLikeQuestion) {
       return {} as Record<string, PythonDatasetDetail>;
     }
 
@@ -3894,7 +3905,7 @@ export function SubjectLearningInterface({
       detailMap[dataset.id] = buildPythonDatasetDetail(dataset, index);
     });
     return detailMap;
-  }, [availablePythonDatasets, selectedQuestionType]);
+  }, [availablePythonDatasets, isPythonLikeQuestion]);
 
   useEffect(() => {
     if (selectedQuestionType === "sql") {
@@ -3914,7 +3925,7 @@ export function SubjectLearningInterface({
       return;
     }
 
-    if (selectedQuestionType === "python") {
+    if (isPythonLikeQuestion) {
       if (availablePythonDatasets.length === 0) {
         setActiveDatasetId(null);
         setDatasetPreview(null);
@@ -3944,6 +3955,7 @@ export function SubjectLearningInterface({
     availablePythonDatasets,
     sqlDatasetVariants,
     selectedQuestionForPopup?.id,
+    isPythonLikeQuestion,
     selectedQuestionType,
   ]);
 
@@ -3963,7 +3975,7 @@ export function SubjectLearningInterface({
         return;
       }
 
-      if (selectedQuestionType === "python") {
+      if (isPythonLikeQuestion) {
         try {
           const detail = pythonDatasetDetails[datasetId];
           if (!detail) {
@@ -4128,6 +4140,7 @@ export function SubjectLearningInterface({
       isDuckDbLoading,
       isDuckDbReady,
       isPreparingDuckDb,
+      isPythonLikeQuestion,
       selectedQuestionType,
     ],
   );
@@ -4173,7 +4186,7 @@ export function SubjectLearningInterface({
   }, [activeDatasetId, isSpreadsheetQuestion, spreadsheetDatasets]);
 
   useEffect(() => {
-    if (selectedQuestionType !== "python") {
+    if (!isPythonLikeQuestion) {
       if (Object.keys(pythonDatasetStatus).length > 0) {
         setPythonDatasetStatus({});
       }
@@ -4204,12 +4217,12 @@ export function SubjectLearningInterface({
         changed = true;
       }
 
-      return changed ? next : prev;
-    });
-  }, [availablePythonDatasets, pythonDatasetStatus, selectedQuestionType]);
+    return changed ? next : prev;
+  });
+  }, [availablePythonDatasets, pythonDatasetStatus, isPythonLikeQuestion]);
 
   useEffect(() => {
-    if (selectedQuestionType !== "python") {
+    if (!isPythonLikeQuestion) {
       return;
     }
     if (!isPyodideReady) {
@@ -4307,16 +4320,16 @@ export function SubjectLearningInterface({
     isPyodideReady,
     loadPyodideDataFrame,
     pythonDatasetDetails,
-    selectedQuestionType,
+    isPythonLikeQuestion,
   ]);
 
   const activePythonDatasetDetail =
-    selectedQuestionType === "python" && activeDatasetId
+    isPythonLikeQuestion && activeDatasetId
       ? pythonDatasetDetails[activeDatasetId]
       : undefined;
 
   const activePythonDatasetStatus =
-    selectedQuestionType === "python" && activeDatasetId
+    isPythonLikeQuestion && activeDatasetId
       ? pythonDatasetStatus[activeDatasetId]
       : undefined;
 
@@ -5318,14 +5331,6 @@ export function SubjectLearningInterface({
 
   };
 
-  const isGeneratedExerciseActive =
-    !!(
-      currentExerciseData?.exercise?.id &&
-      selectedResource?.kind === "exercise" &&
-      selectedResource?.resourceId === currentExerciseData.exercise.id &&
-      selectedResource?.sectionId === selectedSectionId
-    );
-
   // const renderExerciseDisplay = () => {
   //   // Deprecated: exercise content now rendered via renderQuestionPopup('embedded').
   // };
@@ -5928,7 +5933,7 @@ export function SubjectLearningInterface({
           )}
         </div>
         <div className="flex items-right gap-2">
-          {renderContentExpansionToggle("light")}
+          {/* {renderContentExpansionToggle("light")} */}
           {isEmbedded && (
             <button
               onClick={handleExitEmbeddedExercise}
@@ -5938,17 +5943,17 @@ export function SubjectLearningInterface({
               Exit
             </button>
           )}
-          <span
+          {/* <span
             className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
               questionType === "sql"
                 ? "bg-blue-100 text-blue-700"
-                : questionType === "python"
+                : questionType === "python" || questionType === "statistics"
                 ? "bg-yellow-100 text-yellow-800"
                 : "bg-slate-100 text-slate-600"
             }`}
           >
             {config.name}
-          </span>
+          </span> */}
           {!isEmbedded && (
             <button
               onClick={() => {
@@ -6034,7 +6039,7 @@ export function SubjectLearningInterface({
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {sqlDatasetsForQuestion.length > 1 && (
+                  {/* {sqlDatasetsForQuestion.length > 1 && (
                     <div className="flex flex-wrap justify-end gap-2">
                       {sqlDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
@@ -6054,7 +6059,7 @@ export function SubjectLearningInterface({
                         );
                       })}
                     </div>
-                  )}
+                  )} */}
                 </div>
                 <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
@@ -6067,7 +6072,7 @@ export function SubjectLearningInterface({
                       </span>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                         {(activeSqlDataset?.resolvedTableName ?? activeSqlDataset?.table_name) && (
-                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
                             Table: {activeSqlDataset.resolvedTableName ?? activeSqlDataset.table_name}
                           </span>
                         )}
@@ -6187,14 +6192,14 @@ export function SubjectLearningInterface({
                   )}
                 </div>
               </div>
-            ) : questionType === "python" ? (
+            ) : questionType === "python" || questionType === "statistics" ? (
               availablePythonDatasets.length > 0 ? (
                 <div className="flex min-h-full flex-col gap-4">
                   <div className="flex items-center justify-between gap-3">
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                       Dataset Preview
                     </h4>
-                    {availablePythonDatasets.length > 1 && (
+                    {/* {availablePythonDatasets.length > 1 && (
                       <div className="flex flex-wrap justify-end gap-2">
                         {availablePythonDatasets.map((dataset) => {
                           const isActive = dataset.id === activeDatasetId;
@@ -6215,7 +6220,7 @@ export function SubjectLearningInterface({
                           );
                         })}
                       </div>
-                    )}
+                    )} */}
                   </div>
                   <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
@@ -6227,7 +6232,7 @@ export function SubjectLearningInterface({
                         </span>
                         <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                           {activePythonDatasetDetail?.pythonVariable && (
-                            <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
                               Variable: {activePythonDatasetDetail.pythonVariable}
                             </span>
                           )}
@@ -6236,11 +6241,11 @@ export function SubjectLearningInterface({
                               Rows: {activePythonDatasetDetail.rowCount}
                             </span>
                           )}
-                          {activePythonDatasetStatus?.state === "loaded" && (
+                          {/* {activePythonDatasetStatus?.state === "loaded" && (
                             <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
                               Loaded into Pyodide
                             </span>
-                          )}
+                          )} */}
                           {activePythonDatasetStatus?.state === "loading" && (
                             <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-indigo-700">
                               Loading into Pyodide...
@@ -6586,14 +6591,15 @@ export function SubjectLearningInterface({
               />
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 bg-slate-900/60 px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-                  {!isPyodideReady && questionType === "python" && (
+                  {!isPyodideReady &&
+                    (questionType === "python" || questionType === "statistics") && (
                     <span className="rounded-full bg-slate-800 px-3 py-1">Preparing Python runtime...</span>
                   )}
                   {!isDuckDbReady && questionType === "sql" && (
                     <span className="rounded-full bg-slate-800 px-3 py-1">Preparing DuckDB...</span>
                   )}
                   {duckDbTables.length > 0 && questionType === "sql" && (
-                    <span className="rounded-full bg-slate-800 px-3 py-1">
+                    <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
                       Tables: {duckDbTables.slice(0, 4).join(", ")}
                       {duckDbTables.length > 4 ? ` +${duckDbTables.length - 4}` : ""}
                     </span>
@@ -6612,7 +6618,7 @@ export function SubjectLearningInterface({
                       isExecutingPython ||
                       !sqlCode.trim() ||
                       (questionType === "sql" && (!isDuckDbReady || isPreparingDuckDb)) ||
-                      (questionType === "python" && !isPyodideReady)
+                      ((questionType === "python" || questionType === "statistics") && !isPyodideReady)
                     }
                     className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
                   >
@@ -6814,9 +6820,7 @@ export function SubjectLearningInterface({
 
   const activePracticeTitle = isPracticeMode && selectedPracticeExercise
     ? selectedPracticeExercise.title
-    : isGeneratedExerciseActive
-      ? currentExerciseData?.exercise?.title || null
-      : null;
+    : null;
 
   return (
 

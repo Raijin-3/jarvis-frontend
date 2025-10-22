@@ -48,9 +48,17 @@ export function PracticeInterfaceRouter({
 }: PracticeInterfaceRouterProps) {
   // Determine which interface to use
   const effectiveLanguage = language || subjectType;
+  const normalizedLanguage = (effectiveLanguage ?? '').toLowerCase();
+  const normalizedSubjectType = (subjectType ?? '').toLowerCase();
+  const useSqlInterface =
+    normalizedLanguage === 'sql' || normalizedSubjectType === 'sql';
+  const usePythonInterface =
+    normalizedLanguage === 'python' ||
+    normalizedSubjectType === 'python' ||
+    normalizedSubjectType === 'statistics';
 
   // Route to appropriate interface
-  if (effectiveLanguage === 'sql' || subjectType === 'sql') {
+  if (useSqlInterface) {
     return (
       <SqlPracticeInterface
         exerciseId={exerciseId}
@@ -63,7 +71,7 @@ export function PracticeInterfaceRouter({
     );
   }
 
-  if (effectiveLanguage === 'python' || subjectType === 'python') {
+  if (usePythonInterface) {
     return (
       <PythonPracticeInterface
         exerciseId={exerciseId}
@@ -71,6 +79,9 @@ export function PracticeInterfaceRouter({
         initialCode={initialCode}
         title={title}
         description={description}
+        subjectType={
+          normalizedSubjectType === 'statistics' ? 'statistics' : 'python'
+        }
         onSubmit={onSubmit}
       />
     );
