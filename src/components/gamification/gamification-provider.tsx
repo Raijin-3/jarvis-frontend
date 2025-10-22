@@ -135,7 +135,12 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
   const apiCall = useCallback(async (endpoint: string, options: RequestInit = {}) => {
     try {
       const headers = await getAuthHeaders();
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}${endpoint}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+      const fullUrl = `${apiUrl}${endpoint}`;
+      
+      console.debug('[Gamification] Fetching:', fullUrl);
+      
+      const response = await fetch(fullUrl, {
         ...options,
         headers: {
           ...headers,
@@ -144,12 +149,17 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
       });
 
       if (!response.ok) {
-        throw new Error(`API call failed: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
       return await response.json();
     } catch (error) {
-      console.error('API call error:', error);
+      console.error('[Gamification] API call error:', {
+        endpoint,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       throw error;
     }
   }, [getAuthHeaders]);

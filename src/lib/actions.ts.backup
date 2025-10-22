@@ -85,10 +85,6 @@ export async function resumeAdaptiveQuizAction(data?: {
   return apiPost(`/v1/adaptive-quiz/resume`, data ?? {});
 }
 
-export async function checkAdaptiveQuizStatusAction(sectionId: string) {
-  return apiPost(`/v1/adaptive-quiz/check-status`, { sectionId });
-}
-
 export async function getNextQuestionAction(data: {
   sessionId: string;
   previousAnswer?: {

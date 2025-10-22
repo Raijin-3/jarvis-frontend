@@ -47,30 +47,39 @@ export function LeaderboardWidget({ compact = false }: LeaderboardWidgetProps) {
         'Content-Type': 'application/json',
       };
 
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+
       // Fetch overall points leaderboard
       const overallResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/v1/gamification/leaderboard/overall_points?limit=10`,
+        `${apiUrl}/v1/gamification/leaderboard/overall_points?limit=10`,
         { headers }
       );
       
       // Fetch monthly points leaderboard
       const monthlyResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/v1/gamification/leaderboard/monthly_points?limit=10`,
+        `${apiUrl}/v1/gamification/leaderboard/monthly_points?limit=10`,
         { headers }
       );
 
       if (overallResponse.ok) {
         const overallData = await overallResponse.json();
         setOverallLeaderboard(overallData);
+      } else {
+        console.error('Overall leaderboard fetch failed:', overallResponse.status, overallResponse.statusText);
       }
 
       if (monthlyResponse.ok) {
         const monthlyData = await monthlyResponse.json();
         setMonthlyLeaderboard(monthlyData);
+      } else {
+        console.error('Monthly leaderboard fetch failed:', monthlyResponse.status, monthlyResponse.statusText);
       }
 
     } catch (error) {
-      console.error('Failed to fetch leaderboards:', error);
+      console.error('Failed to fetch leaderboards:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       setError('Failed to load leaderboard');
     } finally {
       setIsLoading(false);

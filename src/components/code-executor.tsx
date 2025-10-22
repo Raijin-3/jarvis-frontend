@@ -194,7 +194,7 @@ import pandas as pd
 import json
 
 # Load dataset
-${varName}_data = json.loads('''${dataJson.replace(/'/g, "\\'")}''')
+${varName}_data = json.loads(${JSON.stringify(dataJson)})
 ${varName} = pd.DataFrame(${varName}_data)
 
 # Get dataset info

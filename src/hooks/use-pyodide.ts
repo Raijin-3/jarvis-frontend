@@ -222,7 +222,7 @@ import pandas as pd
 import json
 
 # Load dataset
-${varName}_data = json.loads('''${dataJson}''')
+${varName}_data = json.loads(${JSON.stringify(dataJson)})
 ${varName} = pd.DataFrame(${varName}_data)
 `);
 

@@ -7,6 +7,8 @@ import {
   getSectionQuizzesAction,
   getExerciseDatasetsAction,
   startAdaptiveQuizAction,
+  resumeAdaptiveQuizAction,
+  checkAdaptiveQuizStatusAction,
   getNextQuestionAction,
   getAdaptiveQuizSummaryAction,
   getExerciseProgressAction,
@@ -15,7 +17,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VideoPlayer } from "@/components/video-player";
 import { ProfessionalCourseTabs } from "@/components/professional-course-tabs";
 import { PracticeArea } from "@/components/practice-area";
-import { SectionQuizRunner, QuizRunnerResult } from "@/components/section-quiz-runner";
 import { useVideoState } from "@/hooks/use-video-state";
 import { supabaseBrowser } from '@/lib/supabase-browser';
 import { useDuckDB } from "@/hooks/use-duckdb";
@@ -187,6 +188,11 @@ type Module = { id?: string; slug?: string; title: string; subjectId?: string; s
 type ResourceKind = "lecture" | "exercise" | "quiz";
 
 type SelectedResource = { sectionId: string; kind: ResourceKind; resourceId?: string };
+
+type AdaptiveQuizSectionStatus = {
+  hasActiveQuiz: boolean;
+  sessionId?: string;
+};
 
 const resourceLabels: Record<ResourceKind, string> = {
   lecture: "Lecture Video",
@@ -1284,8 +1290,11 @@ export function SubjectLearningInterface({
 
   // Quiz state
   const [loadedQuiz, setLoadedQuiz] = useState<Quiz | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string[]>>({});
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizScore, setQuizScore] = useState<number>(0);
   const [quizLoading, setQuizLoading] = useState(false);
-  const [quizRunnerKey, setQuizRunnerKey] = useState(0);
+  const [currentQuizQuestionIndex, setCurrentQuizQuestionIndex] = useState(0);
 
   // Section quizzes state
   const [sectionQuizzes, setSectionQuizzes] = useState<{ [sectionId: string]: Quiz[] }>({});
@@ -1304,11 +1313,93 @@ export function SubjectLearningInterface({
   // Generation state
   const [generatingExercise, setGeneratingExercise] = useState<Record<string, boolean>>({});
   const [generatingQuiz, setGeneratingQuiz] = useState<Record<string, boolean>>({});
+  const [activeSectionQuizzes, setActiveSectionQuizzes] = useState<Record<string, AdaptiveQuizSectionStatus>>({});
+
+  const fetchAdaptiveQuizStatus = useCallback(
+    async (sectionId: string, options?: { suppressUpdate?: boolean }): Promise<AdaptiveQuizSectionStatus> => {
+      if (!sectionId) {
+        return { hasActiveQuiz: false };
+      }
+
+      try {
+        const response = (await checkAdaptiveQuizStatusAction(sectionId)) as any;
+        const normalized: AdaptiveQuizSectionStatus = {
+          hasActiveQuiz: Boolean(response?.hasActiveQuiz),
+          sessionId: typeof response?.sessionId === "string" ? response.sessionId : undefined,
+        };
+
+        if (!options?.suppressUpdate) {
+          setActiveSectionQuizzes((prev) => ({
+            ...prev,
+            [sectionId]: normalized,
+          }));
+        }
+
+        return normalized;
+      } catch (error) {
+        console.error(`Failed to check adaptive quiz status for section ${sectionId}:`, error);
+        const fallback: AdaptiveQuizSectionStatus = { hasActiveQuiz: false };
+
+        if (!options?.suppressUpdate) {
+          setActiveSectionQuizzes((prev) => ({
+            ...prev,
+            [sectionId]: fallback,
+          }));
+        }
+
+        return fallback;
+      }
+    },
+    [],
+  );
 
   // Content generation loading state
   const isGeneratingContentForSection = selectedSectionId
     ? generatingExercise[selectedSectionId] || generatingQuiz[selectedSectionId]
     : false;
+
+  useEffect(() => {
+    const uniqueSectionIds = Array.from(
+      new Set(
+        (allSections || [])
+          .map((section) => section?.id)
+          .filter((sectionId): sectionId is string => Boolean(sectionId)),
+      ),
+    );
+
+    if (!uniqueSectionIds.length) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadStatuses = async () => {
+      const statuses = await Promise.all(
+        uniqueSectionIds.map(async (sectionId) => {
+          const status = await fetchAdaptiveQuizStatus(sectionId, { suppressUpdate: true });
+          return { sectionId, status };
+        }),
+      );
+
+      if (isCancelled) {
+        return;
+      }
+
+      setActiveSectionQuizzes((prev) => {
+        const updated = { ...prev };
+        statuses.forEach(({ sectionId, status }) => {
+          updated[sectionId] = status;
+        });
+        return updated;
+      });
+    };
+
+    loadStatuses();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [allSections, fetchAdaptiveQuizStatus]);
 
   // Progressive generation state
   const [generationStep, setGenerationStep] = useState<string>('');
@@ -2096,35 +2187,79 @@ export function SubjectLearningInterface({
 
     setGeneratingQuiz(prev => ({ ...prev, [section.id]: true }));
     try {
-      const result = await startAdaptiveQuizAction({
-        courseId,
-        subjectId,
-        sectionId: section.id,
-        sectionTitle: section.title || '',
-        difficulty: 'Beginner',
-        targetLength: 10,
-      }) as any;
+      const status = await fetchAdaptiveQuizStatus(section.id);
+      const shouldResume = status?.hasActiveQuiz;
 
-      if (result && result.session && result.firstQuestion && !result.stop) {
+      const result = shouldResume
+        ? ((await resumeAdaptiveQuizAction({ sectionId: section.id })) as any)
+        : ((await startAdaptiveQuizAction({
+            courseId,
+            subjectId,
+            sectionId: section.id,
+            sectionTitle: section.title || '',
+            difficulty: 'Beginner',
+            targetLength: 10,
+          })) as any);
+
+      if (!result || !result.session) {
+        return;
+      }
+
+      const nextQuestion = result.currentQuestion ?? result.firstQuestion;
+
+      if (result.stop) {
         setAdaptiveQuizSession(result.session);
-        setCurrentAdaptiveQuestion(normalizeAdaptiveQuestion(result.firstQuestion));
+        setAdaptiveQuizCompleted(true);
         setIsAdaptiveQuizMode(true);
-        setAdaptiveQuizCompleted(false);
         setAdaptiveQuizAnswer('');
         setPendingAdaptiveQuestion(null);
         setSubmittingAdaptiveAnswer(false);
         setShowAdaptiveExplanation(false);
         setLastAnswerCorrect(null);
-        setAdaptiveQuizSummary(null);
-      } else if (result?.stop) {
-        console.log('Quiz stopped immediately');
+
+        try {
+          const summaryResult = await getAdaptiveQuizSummaryAction(result.session.id);
+          if (summaryResult) {
+            setAdaptiveQuizSummary(normalizeAdaptiveSummary(summaryResult));
+          }
+        } catch (summaryError) {
+          console.error('Failed to fetch adaptive quiz summary:', summaryError);
+        }
+
+        await fetchAdaptiveQuizStatus(section.id);
+        return;
       }
+
+      if (!nextQuestion) {
+        console.warn('Adaptive quiz response missing next question');
+        await fetchAdaptiveQuizStatus(section.id);
+        return;
+      }
+
+      setAdaptiveQuizSession(result.session);
+      setCurrentAdaptiveQuestion(normalizeAdaptiveQuestion(nextQuestion));
+      setIsAdaptiveQuizMode(true);
+      setAdaptiveQuizCompleted(false);
+      setAdaptiveQuizAnswer('');
+      setPendingAdaptiveQuestion(null);
+      setSubmittingAdaptiveAnswer(false);
+      setShowAdaptiveExplanation(false);
+      setLastAnswerCorrect(null);
+      setAdaptiveQuizSummary(null);
+
+      setActiveSectionQuizzes(prev => ({
+        ...prev,
+        [section.id]: {
+          hasActiveQuiz: true,
+          sessionId: result.session.id,
+        },
+      }));
     } catch (error) {
-      console.error('Failed to start adaptive quiz:', error);
+      console.error('Failed to start or resume adaptive quiz:', error);
     } finally {
       setGeneratingQuiz(prev => ({ ...prev, [section.id]: false }));
     }
-  }, [generatingQuiz, courseId, subjectId, isAdaptiveQuizMode]);
+  }, [generatingQuiz, isAdaptiveQuizMode, fetchAdaptiveQuizStatus, courseId, subjectId]);
 
   const handleAdaptiveQuizSubmit = useCallback(async () => {
     if (
@@ -2160,10 +2295,21 @@ export function SubjectLearningInterface({
 
       if (result?.stop) {
         setAdaptiveQuizCompleted(true);
+        const sectionIdForStatus = adaptiveQuizSession?.section_id;
+        if (sectionIdForStatus) {
+          setActiveSectionQuizzes(prev => ({
+            ...prev,
+            [sectionIdForStatus]: { hasActiveQuiz: false },
+          }));
+        }
 
         const summaryResult = await getAdaptiveQuizSummaryAction(adaptiveQuizSession.id);
         if (summaryResult) {
           setAdaptiveQuizSummary(normalizeAdaptiveSummary(summaryResult));
+        }
+
+        if (sectionIdForStatus) {
+          await fetchAdaptiveQuizStatus(sectionIdForStatus);
         }
       } else if (result?.question) {
         setPendingAdaptiveQuestion(normalizeAdaptiveQuestion(result.question));
@@ -2179,6 +2325,7 @@ export function SubjectLearningInterface({
     adaptiveQuizAnswer,
     submittingAdaptiveAnswer,
     showAdaptiveExplanation,
+    fetchAdaptiveQuizStatus,
   ]);
 
   const handleAdaptiveQuizNext = useCallback(() => {
@@ -2513,17 +2660,40 @@ export function SubjectLearningInterface({
         }
 
         if (prev.kind === "exercise") {
-          // console.log(selectedSection);
-          const exercises = getExercises(selectedSection);
+          const sectionId = selectedSection.id;
+          const prevResourceId = prev.resourceId != null ? String(prev.resourceId) : null;
+          const dynamicExercises =
+            sectionId && Array.isArray(sectionExercises[sectionId])
+              ? sectionExercises[sectionId].filter(Boolean)
+              : [];
+          const staticExercises = getExercises(selectedSection);
 
-          if (exercises.some((exercise) => exercise.id === prev.resourceId)) return prev;
+          const matchesDynamic =
+            prevResourceId !== null &&
+            dynamicExercises.some(
+              (exercise: any) => exercise?.id != null && String(exercise.id) === prevResourceId,
+            );
+          const matchesStatic =
+            prevResourceId !== null &&
+            staticExercises.some(
+              (exercise) => exercise?.id != null && String(exercise.id) === prevResourceId,
+            );
 
-          if (exercises.length) {
-
-            return { sectionId: selectedSection.id, kind: "exercise", resourceId: exercises[0]?.id };
-
+          if (matchesDynamic || matchesStatic) {
+            return prev;
           }
 
+          const fallbackList = dynamicExercises.length ? dynamicExercises : staticExercises;
+          const fallbackExercise = fallbackList.find((exercise: any) => exercise?.id != null);
+
+          if (fallbackExercise) {
+            return {
+              sectionId,
+              kind: "exercise",
+              resourceId:
+                fallbackExercise.id != null ? String(fallbackExercise.id) : undefined,
+            };
+          }
         }
 
         if (prev.kind === "quiz") {
@@ -2546,12 +2716,15 @@ export function SubjectLearningInterface({
 
     });
 
-  }, [selectedSection, fetchSectionExercises, fetchSectionQuizzes]);
+  }, [selectedSection, fetchSectionExercises, fetchSectionQuizzes, sectionExercises]);
 
   // Reset quiz state when changing quizzes
   useEffect(() => {
     if (selectedResource?.kind === "quiz" && selectedResource.resourceId) {
-      setQuizRunnerKey((prev) => prev + 1);
+      setQuizAnswers({});
+      setQuizSubmitted(false);
+      setQuizScore(0);
+      setCurrentQuizQuestionIndex(0);
       setLoadedQuiz(null); // Reset to trigger reload
     }
   }, [selectedResource?.resourceId]);
@@ -2766,18 +2939,6 @@ export function SubjectLearningInterface({
       setIsQuizRunnerMode(false);
     }
   }, [courseId, subjectId, sectionQuizzes, allSections, quizSession, loadedQuiz, selectedResource]);
-
-  const onQuizRunnerComplete = useCallback(
-    (result: QuizRunnerResult) => {
-      if (!selectedSection) {
-        return;
-      }
-      if (isQuizRunnerMode && quizSession) {
-        void handleQuizComplete(selectedSection.id, result.score, result.answers);
-      }
-    },
-    [handleQuizComplete, isQuizRunnerMode, quizSession, selectedSection],
-  );
 
   const lectureSelection = useMemo(() => {
 
@@ -3253,31 +3414,6 @@ export function SubjectLearningInterface({
       setShowQuestionPopup(false);
     },
     [setActiveExerciseQuestion, handleExitPractice],
-  );
-
-  const handleSelectQuiz = useCallback(
-    (sectionId: string, quiz: Quiz) => {
-      if (!quiz) return;
-      const resourceId = quiz.id ? String(quiz.id) : undefined;
-      setIsQuizRunnerMode(false);
-      setSelectedSectionId(sectionId);
-      setSelectedResource((prev) => {
-        const isSameSelection =
-          prev?.kind === "quiz" &&
-          prev.sectionId === sectionId &&
-          (prev.resourceId ?? undefined) === resourceId;
-        if (isSameSelection) {
-          setQuizRunnerKey((key) => key + 1);
-          return prev;
-        }
-        return {
-          sectionId,
-          kind: "quiz",
-          ...(resourceId ? { resourceId } : {}),
-        };
-      });
-    },
-    [setIsQuizRunnerMode, setSelectedSectionId, setSelectedResource, setQuizRunnerKey],
   );
 
   const handleNavigateExerciseQuestion = useCallback(
@@ -5195,15 +5331,19 @@ export function SubjectLearningInterface({
   // };
 
   const renderQuizDisplay = () => {
+
     if (selectedResource?.kind !== "quiz") {
+
       return null;
+
     }
 
+    // Show loading state if generation is in progress
     if (isGeneratingContentForSection) {
       return (
-        <div className="flex min-h-[460px] items-center justify-center overflow-hidden rounded-2xl border border-white/60 bg-white/80 shadow-lg backdrop-blur-xl">
+        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden min-h-[460px] flex items-center justify-center">
           <div className="text-center">
-            <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-4 border-green-400 border-t-transparent"></div>
+            <div className="w-8 h-8 border-4 border-green-400 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
             <p className="text-gray-600">Generating quiz...</p>
           </div>
         </div>
@@ -5211,33 +5351,195 @@ export function SubjectLearningInterface({
     }
 
     if (quizLoading) {
+
       return (
-        <div className="rounded-2xl border border-white/60 bg-white/80 p-6 text-center text-gray-500 shadow-lg backdrop-blur-xl">
-          Loading quiz...
+
+        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6">
+
+          <div className="text-center text-gray-500">Loading quiz...</div>
+
         </div>
+
       );
+
     }
 
     if (!activeQuiz) {
+
       return (
-        <div className="rounded-2xl border border-white/60 bg-white/80 p-6 text-center text-gray-500 shadow-lg backdrop-blur-xl">
-          No quiz available for this section.
+
+        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6">
+
+          <div className="text-center text-gray-500">No quiz available for this section.</div>
+
+        </div>
+
+      );
+
+    }
+
+    const questions = activeQuiz.quiz_questions || [];
+
+    const totalQuestions = questions.length;
+
+    const currentQuestion = questions[currentQuizQuestionIndex];
+
+    if (questions.length === 0) {
+      return (
+        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6">
+          <div className="text-center text-gray-500">No questions available for this quiz.</div>
         </div>
       );
     }
 
-    const runnerKey = `${activeQuiz.id ?? "quiz"}-${quizRunnerKey}`;
+    if (quizSubmitted) {
+      return (
+        <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden p-6">
+          <div className="text-center">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+              Quiz Completed!
+            </h2>
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <p className="text-green-700">
+                You scored {quizScore} out of {totalQuestions} ({Math.round((quizScore / totalQuestions) * 100)}%)
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+  const handleNext = () => {
+    if (currentQuizQuestionIndex < totalQuestions - 1) {
+      setCurrentQuizQuestionIndex(currentQuizQuestionIndex + 1);
+    } else {
+      // Submit quiz
+      let score = 0;
+      questions.forEach((question, index) => {
+        const userAnswer = quizAnswers[question.id || index.toString()];
+        if (userAnswer && userAnswer.length > 0) {
+          const correctOption = question.quiz_options?.find(opt => opt.correct);
+          if (correctOption && userAnswer[0] === correctOption.text) {
+            score++;
+          }
+        }
+      });
+      setQuizScore(score);
+      setQuizSubmitted(true);
+
+      // If in runner mode, handle completion
+      if (isQuizRunnerMode && quizSession && selectedSection) {
+        handleQuizComplete(selectedSection.id, score, quizAnswers);
+      }
+    }
+  };
+
+    const handlePrevious = () => {
+      if (currentQuizQuestionIndex > 0) {
+        setCurrentQuizQuestionIndex(currentQuizQuestionIndex - 1);
+      }
+    };
+
+    const progressPct = totalQuestions > 0 ? ((currentQuizQuestionIndex + 1) / totalQuestions) * 100 : 0;
 
     return (
-      <SectionQuizRunner
-        key={runnerKey}
-        quiz={activeQuiz}
-        sectionTitle={selectedSection?.title}
-        fallbackTitle={resourceLabels.quiz}
-        headerAccessory={renderContentExpansionToggle("light")}
-        onComplete={onQuizRunnerComplete}
-      />
+      <div className="rounded-2xl border border-white/60 bg-white/80 backdrop-blur-xl shadow-lg overflow-hidden">
+        <div className="p-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                {selectedSection?.title} - {activeQuiz.title || resourceLabels.quiz}
+              </h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Question {currentQuizQuestionIndex + 1} of {totalQuestions}
+              </p>
+            </div>
+            <div className="flex items-center justify-end">
+              {renderContentExpansionToggle("light")}
+            </div>
+          </div>
+          <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
+            <div
+              className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+
+        <div className="px-6 pb-6">
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <div className="mb-4">
+              <p className="text-gray-700">{currentQuestion?.text || currentQuestion?.content}</p>
+            </div>
+
+            {currentQuestion?.type === 'text' && (
+              <div className="space-y-3">
+                <textarea
+                  value={quizAnswers[currentQuestion.id || currentQuizQuestionIndex.toString()]?.[0] || ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setQuizAnswers(prev => ({
+                      ...prev,
+                      [currentQuestion.id || currentQuizQuestionIndex.toString()]: [value]
+                    }));
+                  }}
+                  placeholder="Type your answer here..."
+                  className="w-full p-4 border border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 resize-none min-h-[120px] text-gray-900"
+                  rows={4}
+                />
+              </div>
+            )}
+
+            {currentQuestion?.quiz_options && currentQuestion.quiz_options.length > 0 && (
+              <div className="space-y-3">
+                {currentQuestion.quiz_options.map((option, optIndex) => {
+                  const optionLetter = String.fromCharCode(65 + optIndex); // A, B, C, D...
+                  const isSelected = quizAnswers[currentQuestion.id || currentQuizQuestionIndex.toString()]?.includes(option.text || '') || false;
+                  return (
+                    <div
+                      key={option.id || optIndex}
+                      onClick={() => {
+                        const optionText = option.text || '';
+                        setQuizAnswers(prev => ({
+                          ...prev,
+                          [currentQuestion.id || currentQuizQuestionIndex.toString()]: [optionText]
+                        }));
+                      }}
+                      className={`cursor-pointer rounded-lg border-2 p-4 transition-all duration-200 ${
+                        isSelected
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span className="text-sm font-medium">
+                        <strong>{optionLetter})</strong> {option.text || ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between mt-6">
+            <button
+              onClick={handlePrevious}
+              disabled={currentQuizQuestionIndex === 0}
+              className="px-4 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <button
+              onClick={handleNext}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+            >
+              {currentQuizQuestionIndex === totalQuestions - 1 ? 'Submit Quiz' : 'Next'}
+            </button>
+          </div>
+        </div>
+      </div>
     );
+
   };
 
   const renderAdaptiveQuizDisplay = () => {
@@ -6576,19 +6878,7 @@ export function SubjectLearningInterface({
                 {isContentExpanded ? "Browse Outline" : "Collapse Outline"}
               </button>
 
-              <div className="text-right">
-
-                {/* <div className="text-sm text-gray-600 mb-1">Progress</div> */}
-
-                {/* <div className="text-2xl font-bold text-indigo-600">
-
-                  {completedSections}/{totalSections}
-
-                </div> */}
-
-                {/* <div className="text-xs text-gray-500">lessons completed</div> */}
-
-              </div>
+              
             </div>
 
           </div>
@@ -6782,6 +7072,10 @@ export function SubjectLearningInterface({
 
                     const shouldHideGenerationButtons = moduleIndex === 0 && moduleSectionIndex === 0;
                     // const shouldHideGenerationButtons = exercises.length > 0;
+                    const adaptiveQuizStatus = activeSectionQuizzes[section.id];
+                    const hasActiveAdaptiveQuiz = Boolean(adaptiveQuizStatus?.hasActiveQuiz);
+                    const adaptiveButtonLabel = hasActiveAdaptiveQuiz ? "Resume Adaptive Quiz" : "Start Adaptive Quiz";
+                    const adaptiveButtonLoadingLabel = hasActiveAdaptiveQuiz ? "Resuming..." : "Starting...";
 
                     return (
 
@@ -6991,32 +7285,6 @@ export function SubjectLearningInterface({
                             return null;
                           })()}
 
-                          {quizzes.length > 0 && (
-                            <div className="mt-3 space-y-3">
-                              {quizzes.map((quiz, quizIndex) => (
-                                <div key={quiz.id || quizIndex} className="space-y-2">
-                                  <div className="rounded-lg bg-gray-50 p-3">
-                                    <h4 className="text-sm font-medium text-gray-900">
-                                      {quiz.title || `Quiz ${quizIndex + 1}`}
-                                    </h4>
-                                    {quiz.type && (
-                                      <p className="mt-1 text-xs text-gray-600 capitalize">{quiz.type}</p>
-                                    )}
-                                  </div>
-                                  <button
-                                    onClick={() => handleSelectQuiz(section.id, quiz)}
-                                    className="group flex w-full items-center gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-2 text-sm text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50/60 hover:text-indigo-700"
-                                  >
-                                    <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-slate-100 text-slate-500 group-hover:bg-indigo-100 group-hover:text-indigo-600">
-                                      <CheckSquare className="h-3.5 w-3.5" />
-                                    </span>
-                                    <span>Open Quiz</span>
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
                           {!shouldHideGenerationButtons && (
                             <>
                               {/* Generate Exercise Button */}
@@ -7047,12 +7315,12 @@ export function SubjectLearningInterface({
                                 {generatingQuiz[section.id] ? (
                                   <>
                                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                    <span>Starting...</span>
+                                    <span>{adaptiveButtonLoadingLabel}</span>
                                   </>
                                 ) : (
                                   <>
                                     <Activity className="h-4 w-4" />
-                                    <span>Start Adaptive Quiz</span>
+                                    <span>{adaptiveButtonLabel}</span>
                                   </>
                                 )}
                               </button>
