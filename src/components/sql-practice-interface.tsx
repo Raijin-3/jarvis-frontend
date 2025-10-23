@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { apiPost } from "@/lib/api-client";
 import { toast } from "@/lib/toast";
 import { useSQLite, SQLResult } from "@/hooks/useSQLite";
+import { formatDatasetValue } from "@/lib/utils";
 import {
   PlayCircle,
   Square,
@@ -593,13 +594,16 @@ export function SqlPracticeInterface({
                             <tbody>
                               {dataset.data_preview.slice(0, 3).map((row, rowIndex) => (
                                 <tr key={rowIndex} className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                                  {Object.values(row).slice(0, 5).map((value, colIndex) => (
-                                    <td key={colIndex} className="border border-gray-300 px-3 py-2 text-gray-700">
-                                      <span className="block max-w-24 truncate" title={String(value)}>
-                                        {String(value)}
-                                      </span>
-                                    </td>
-                                  ))}
+                                  {Object.values(row).slice(0, 5).map((value, colIndex) => {
+                                    const displayValue = formatDatasetValue(value);
+                                    return (
+                                      <td key={colIndex} className="border border-gray-300 px-3 py-2 text-gray-700">
+                                        <span className="block max-w-24 truncate" title={displayValue}>
+                                          {displayValue}
+                                        </span>
+                                      </td>
+                                    );
+                                  })}
                                 </tr>
                               ))}
                             </tbody>

@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { CodeExecutor } from './code-executor';
 import { ChevronDown, ChevronUp, CheckCircle, Circle } from 'lucide-react';
+import { formatDatasetValue } from '@/lib/utils';
 
 type ExerciseQuestion = {
   id: number;
@@ -200,7 +201,7 @@ export function ExerciseWorkspace({
                                   className="px-3 py-2 border border-gray-200 text-gray-600"
                                 >
                                   {row[col] !== null && row[col] !== undefined
-                                    ? String(row[col])
+                                    ? formatDatasetValue(row[col])
                                     : 'NULL'}
                                 </td>
                               ))}

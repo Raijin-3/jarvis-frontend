@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { apiPost } from "@/lib/api-client";
 import { toast } from "@/lib/toast";
 import { usePyodide } from "@/hooks/use-pyodide";
+import { formatDatasetValue } from "@/lib/utils";
 import {
   PlayCircle,
   CheckCircle,
@@ -167,16 +168,6 @@ const getErrorMessage = (error: unknown, fallback = 'Execution failed'): string 
     return error;
   }
   return fallback;
-};
-
-const formatDatasetValue = (value: DatasetCellValue): string => {
-  if (value === null) {
-    return 'null';
-  }
-  if (typeof value === 'boolean') {
-    return value ? 'true' : 'false';
-  }
-  return String(value);
 };
 
 export function PythonPracticeInterface({

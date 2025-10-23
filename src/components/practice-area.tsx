@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { 
   Play, 
   Code, 
@@ -15,6 +15,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { RichContent } from './rich-content';
+import { formatDatasetValue } from '@/lib/utils';
 
 type PracticeQuestion = {
   id: string;
@@ -141,17 +142,45 @@ export function PracticeArea({
   const currentQuestion = questions[currentQuestionIndex];
   const currentDataset = datasets[currentQuestionIndex];
 
+  const resolvedQuestionText = useMemo(() => {
+    if (!currentQuestion) {
+      return '';
+    }
+
+    const rawContent =
+      typeof (currentQuestion as any)?.content === 'string'
+        ? (currentQuestion as any).content
+        : typeof (currentQuestion as any)?.content?.text === 'string'
+        ? (currentQuestion as any).content.text
+        : undefined;
+
+    const candidates = [
+      currentQuestion.text,
+      (currentQuestion as any)?.question_text,
+      (currentQuestion as any)?.business_question,
+      (currentQuestion as any)?.prompt,
+      rawContent,
+    ];
+
+    const match = candidates.find(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
+
+    return match ?? '';
+  }, [currentQuestion]);
+
   // Initialize code when question changes
   useEffect(() => {
     if (currentQuestion) {
-      const defaultCode = currentQuestion.starter_code || getDefaultCode(exerciseType, currentQuestion.text);
+      const defaultCode =
+        currentQuestion.starter_code || getDefaultCode(exerciseType, resolvedQuestionText);
       setUserCode(defaultCode);
       setSubmissionResult(null);
       setShowHint(false);
       setElapsedTime(0);
       setIsTimerRunning(true);
     }
-  }, [currentQuestionIndex, currentQuestion, exerciseType]);
+  }, [currentQuestionIndex, currentQuestion, exerciseType, resolvedQuestionText]);
 
   // Timer effect
   useEffect(() => {
@@ -266,7 +295,7 @@ export function PracticeArea({
 
             {/* Question Text */}
             <div className="prose-content">
-              <RichContent content={currentQuestion.text} className="text-gray-700" />
+              <RichContent content={resolvedQuestionText} className="text-gray-700" />
             </div>
 
             {/* Dataset Section */}
@@ -314,7 +343,7 @@ export function PracticeArea({
                               <tr key={idx}>
                                 {Object.values(row).map((value: any, valueIdx) => (
                                   <td key={valueIdx} className="px-2 py-1 border border-gray-200">
-                                    {String(value)}
+                                    {formatCellValue(value)}
                                   </td>
                                 ))}
                               </tr>
@@ -374,7 +403,7 @@ export function PracticeArea({
           <div className="flex gap-2">
             <button
               onClick={() => {
-                const defaultCode = getDefaultCode(exerciseType, currentQuestion.text);
+                const defaultCode = getDefaultCode(exerciseType, resolvedQuestionText);
                 setUserCode(defaultCode);
                 setSubmissionResult(null);
               }}

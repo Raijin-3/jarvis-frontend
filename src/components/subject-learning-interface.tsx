@@ -14,6 +14,7 @@ import {
   getExerciseProgressAction,
 } from "@/lib/actions";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DOMPurify from "dompurify";
 import { VideoPlayer } from "@/components/video-player";
 import { ProfessionalCourseTabs } from "@/components/professional-course-tabs";
 import { PracticeArea } from "@/components/practice-area";
@@ -37,6 +38,17 @@ import {
   Download,
   Play,
 } from "lucide-react";
+
+// HTML Sanitization for adaptive quiz questions
+const SANITIZE_CONFIG = {
+  ALLOWED_TAGS: ['strong', 'em', 'b', 'i', 'sup', 'sub', 'pre', 'code', 'br', 'p', 'table', 'tr', 'td', 'th'],
+  ALLOWED_ATTR: [],
+};
+
+const sanitizeQuestionHTML = (html: string): string => {
+  return DOMPurify.sanitize(html, SANITIZE_CONFIG);
+};
+ 
 
 type Lecture = { id?: string; title?: string; content?: string; type?: string };
 
@@ -135,6 +147,7 @@ type SqlDatasetDefinition = {
   data?: any[];
   columns?: string[];
   cacheKey?: string;
+  creationTables?: string[];
 };
 
 type SqlDatasetVariant = SqlDatasetDefinition & {
@@ -457,6 +470,7 @@ type PythonDatasetDefinition = {
 type PythonDatasetDetail = {
   id: string;
   name: string;
+  displayName: string;
   description?: string;
   columns: string[];
   objectRows: Record<string, unknown>[];
@@ -570,18 +584,58 @@ const extractCsvFromSource = (source?: string | null): string | undefined => {
 const parseCsvToObjects = (csv?: string | null): Record<string, unknown>[] => {
   const sanitized = extractCsvFromSource(csv);
   if (!sanitized) return [];
-  const lines = sanitized.split("\n").filter((line) => line.trim().length > 0);
-  if (lines.length < 2) return [];
 
-  const headers = splitCsvLine(lines[0]);
-  return lines.slice(1).map((line) => {
-    const cells = splitCsvLine(line);
+  const lines = sanitized.split("\n");
+  const meaningfulLines = lines.filter((line) => line.trim().length > 0);
+  if (meaningfulLines.length < 2) return [];
+
+  const closingTriplePattern = /^['"]{3}\s*;?$/;
+
+  const headers = splitCsvLine(meaningfulLines[0]).map((header, idx) => {
+    let cleaned = header.trim();
+
+    if (idx === 0) {
+      const assignmentMatch = cleaned.match(
+        /^[A-Za-z_][\w]*\s*=\s*(?:[frbuFRBU]{0,3})?\s*(?:['"]{3}|['"])?\s*(.*)$/
+      );
+      if (assignmentMatch && assignmentMatch[1]) {
+        cleaned = assignmentMatch[1].trim();
+      }
+      cleaned = cleaned.replace(/['"]{3}\s*$/g, "").replace(/['"]\s*$/g, "").trim();
+    }
+
+    if (!cleaned) {
+      cleaned = `column_${idx + 1}`;
+    }
+
+    return cleaned;
+  });
+
+  const rows: Record<string, unknown>[] = [];
+
+  for (const rawLine of meaningfulLines.slice(1)) {
+    const trimmedLine = rawLine.trim();
+    if (!trimmedLine || closingTriplePattern.test(trimmedLine)) {
+      continue;
+    }
+
+    const cells = splitCsvLine(rawLine);
+    if (cells.length === 1 && closingTriplePattern.test(cells[0].trim())) {
+      continue;
+    }
+
     const entry: Record<string, unknown> = {};
     headers.forEach((header, idx) => {
+      if (!header) {
+        return;
+      }
       entry[header] = cells[idx] ?? "";
     });
-    return entry;
-  });
+
+    rows.push(entry);
+  }
+
+  return rows;
 };
 
 const buildDatasetPreviewFromRecord = (dataset: any): DatasetPreview | null => {
@@ -821,9 +875,18 @@ const buildPythonDatasetDetail = (
       `dataset_${index + 1}`,
   );
 
+  const originalName =
+    dataset.name ||
+    schemaInfo?.dataset_table_name ||
+    dataset.table_name ||
+    `Dataset ${index + 1}`;
+
+  const displayName = pythonVariable || originalName;
+
   return {
     id: dataset.id,
-    name: dataset.name,
+    name: originalName,
+    displayName,
     description: dataset.description,
     columns,
     objectRows,
@@ -840,10 +903,10 @@ const buildPythonDatasetDetail = (
   };
 };
 
-const inferTableNameFromSql = (value?: string | null): string | undefined => {
+const extractTableNamesFromSql = (value?: string | null): string[] => {
   const normalized = normalizeCreationSql(value);
   if (!normalized) {
-    return undefined;
+    return [];
   }
 
   const sanitize = (sql: string) =>
@@ -851,36 +914,37 @@ const inferTableNameFromSql = (value?: string | null): string | undefined => {
       .replace(/--.*$/gm, " ")
       .replace(/\/\*[\s\S]*?\*\//g, " ");
 
-  const extractTableName = (statement: string): string | undefined => {
-    const patterns = [
-      /create\s+(?:or\s+replace\s+)?table\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
-      /create\s+(?:or\s+replace\s+)?view\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
-      /insert\s+into\s+(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/i,
-    ];
-
-    for (const pattern of patterns) {
-      const match = statement.match(pattern);
-      if (match) {
-        return (match[2] ?? match[3] ?? match[4])?.trim();
-      }
-    }
-
-    return undefined;
-  };
-
   const statements = sanitize(normalized)
     .split(";")
     .map((statement) => statement.trim())
     .filter(Boolean);
 
+  const detectedTables = new Set<string>();
+
   for (const statement of statements) {
-    const tableName = extractTableName(statement);
-    if (tableName) {
-      return tableName;
+    const patterns = [
+      /create\s+(?:or\s+replace\s+)?table\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/gi,
+      /create\s+(?:or\s+replace\s+)?view\s+(?:if\s+not\s+exists\s+)?(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/gi,
+      /insert\s+into\s+(?:(["`])([^"`]+)\1|\[([^\]]+)\]|([a-zA-Z0-9_.]+))/gi,
+    ];
+
+    for (const pattern of patterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(statement)) !== null) {
+        const tableName = (match[2] ?? match[3] ?? match[4])?.trim();
+        if (tableName) {
+          detectedTables.add(tableName);
+        }
+      }
     }
   }
 
-  return undefined;
+  return Array.from(detectedTables);
+};
+
+const inferTableNameFromSql = (value?: string | null): string | undefined => {
+  const tables = extractTableNamesFromSql(value);
+  return tables.length > 0 ? tables[0] : undefined;
 };
 
 const deriveDatasetKey = (dataset: {
@@ -920,15 +984,28 @@ const normalizeSectionExerciseQuestion = (
       ? rawId
       : `question-${fallbackIndex ?? 0}`;
 
-  const rawText = typeof question?.text === "string" ? question.text : "";
-  const fallbackText =
-    typeof question?.question_text === "string" ? question.question_text : "";
+  const contentText =
+    typeof question?.content === "string"
+      ? question.content
+      : question?.content &&
+        typeof (question.content as { text?: unknown }).text === "string"
+      ? ((question.content as { text?: string }).text as string)
+      : undefined;
+
+  const normalizedTextCandidate = resolveQuestionTextPreservingFormatting(
+    typeof question?.text === "string" ? question.text : undefined,
+    typeof question?.question_text === "string" ? question.question_text : undefined,
+    typeof question?.business_question === "string" ? question.business_question : undefined,
+    typeof question?.prompt === "string" ? question.prompt : undefined,
+    typeof question?.description === "string" ? question.description : undefined,
+    typeof question?.body === "string" ? question.body : undefined,
+    contentText,
+  );
+
   const normalizedText =
-    rawText && rawText.trim().length > 0
-      ? rawText
-      : fallbackText && fallbackText.trim().length > 0
-      ? fallbackText
-      : rawText || fallbackText || "";
+    normalizedTextCandidate && normalizedTextCandidate.trim().length > 0
+      ? normalizedTextCandidate
+      : "";
 
   const rawType =
     typeof question?.question_type === "string" && question.question_type.trim()
@@ -1215,7 +1292,7 @@ export function SubjectLearningInterface({
     [subjectModules]
   );
 
-  console.log("All Sections:", allSections);
+  // console.log("All Sections:", allSections);
 
   const getModuleIdentifier = useCallback((module: Module | undefined) => {
     if (!module) return undefined;
@@ -3611,6 +3688,18 @@ export function SubjectLearningInterface({
       if (!dataset) return;
       const normalizedCreationSql = normalizeCreationSql(dataset.creation_sql);
       const inferredTableName = dataset.table_name ?? inferTableNameFromSql(normalizedCreationSql);
+      const creationTables = extractTableNamesFromSql(normalizedCreationSql);
+      const combinedCreationTables = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(dataset.creationTables) ? dataset.creationTables : []),
+            ...creationTables,
+          ].filter(
+            (table): table is string =>
+              typeof table === "string" && table.trim().length > 0,
+          ),
+        ),
+      );
       const datasetKey = deriveDatasetKey({
         id: dataset.id,
         table_name: inferredTableName,
@@ -3621,6 +3710,7 @@ export function SubjectLearningInterface({
         creation_sql: normalizedCreationSql,
         table_name: inferredTableName ?? dataset.table_name,
         cacheKey: datasetKey,
+        creationTables: combinedCreationTables.length > 0 ? combinedCreationTables : undefined,
       };
       const key =
         datasetKey ||
@@ -3755,21 +3845,25 @@ export function SubjectLearningInterface({
 
     const pushDataset = (candidate?: PythonDatasetDefinition | null) => {
       if (!candidate) return;
-      const key =
-        candidate.id ||
-        `${candidate.name || "dataset"}::${
-          Array.isArray(candidate.data) ? candidate.data.length : 0
-        }::${
-          Array.isArray(candidate.columns) ? candidate.columns.join("|") : ""
-        }::${
-          typeof candidate.dataset_csv_raw === "string"
-            ? candidate.dataset_csv_raw.length
-            : 0
-        }`;
-      if (seen.has(key)) {
+      const key = [
+        typeof candidate.source === "string" ? candidate.source.trim() : undefined,
+        typeof candidate.id === "string" ? candidate.id.trim() : candidate.id,
+        typeof candidate.table_name === "string" ? candidate.table_name.trim() : undefined,
+        typeof candidate.name === "string" ? candidate.name.trim() : undefined,
+      ]
+        .filter(
+          (part): part is string | number =>
+            typeof part === "number" ||
+            (typeof part === "string" && part.length > 0),
+        )
+        .join("::");
+
+      if (key && seen.has(key)) {
         return;
       }
-      seen.add(key);
+      if (key) {
+        seen.add(key);
+      }
       datasets.push(candidate);
     };
 
@@ -3856,14 +3950,18 @@ export function SubjectLearningInterface({
         });
 
       const mappedTables = datasetKey ? duckDbDatasetTables[datasetKey] : undefined;
+      const creationTables = Array.isArray(dataset.creationTables) ? dataset.creationTables : [];
       const fallbackTables =
         typeof dataset.table_name === "string" && dataset.table_name.trim().length > 0
           ? [dataset.table_name]
           : [];
-
       const candidateTables = Array.from(
         new Set(
-          (mappedTables?.length ? mappedTables : fallbackTables).filter(
+          [
+            ...(Array.isArray(mappedTables) ? mappedTables : []),
+            ...fallbackTables,
+            ...creationTables,
+          ].filter(
             (value): value is string => typeof value === "string" && value.trim().length > 0,
           ),
         ),
@@ -4527,9 +4625,17 @@ export function SubjectLearningInterface({
                 : dataset.table_name && currentTables.includes(dataset.table_name)
                 ? [dataset.table_name]
                 : [];
+            const expectedTables = creationSql ? extractTableNamesFromSql(creationSql) : [];
+            const combinedTables = new Set<string>(datasetTableMap[datasetKey] ?? []);
 
-            if (fallbackTables.length > 0) {
-              datasetTableMap[datasetKey] = Array.from(new Set(fallbackTables));
+            for (const tableName of [...newTables, ...fallbackTables, ...expectedTables]) {
+              if (typeof tableName === "string" && tableName.trim().length > 0) {
+                combinedTables.add(tableName);
+              }
+            }
+
+            if (combinedTables.size > 0) {
+              datasetTableMap[datasetKey] = Array.from(combinedTables);
             }
           }
         }
@@ -5650,7 +5756,10 @@ export function SubjectLearningInterface({
           </div>
 
           <div className="mb-6">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">{currentAdaptiveQuestion.question_text}</h3>
+            <h3
+              className="text-lg font-medium text-gray-900 mb-4"
+              dangerouslySetInnerHTML={{ __html: sanitizeQuestionHTML(currentAdaptiveQuestion.question_text) }}
+            />
 
             <div className="flex items-center gap-2 mb-4">
               <span className={`text-xs font-medium px-2 py-1 rounded-full ${
@@ -5737,7 +5846,13 @@ export function SubjectLearningInterface({
               }
               className="px-6 py-2.5 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 rounded-lg font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>Next</span>
+              {/* sow the soinner while waiting for next question */}
+              {submittingAdaptiveAnswer ? (
+                <div className="animate-spin inline-block h-5 w-5 border-2 border-current border-solid rounded-full"></div>
+              ) : (
+                <span>Next</span>
+              )}
+              {/* <span>Next</span> */}
             </button>
           </div>
         </div>
@@ -6039,11 +6154,12 @@ export function SubjectLearningInterface({
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {/* {sqlDatasetsForQuestion.length > 1 && (
+                  {sqlDatasetsForQuestion.length > 1 && (
                     <div className="flex flex-wrap justify-end gap-2">
                       {sqlDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
                         const label = dataset.displayName || dataset.name || dataset.table_name || "Dataset";
+                        console.log(dataset);
                         return (
                           <button
                             key={dataset.id}
@@ -6059,7 +6175,7 @@ export function SubjectLearningInterface({
                         );
                       })}
                     </div>
-                  )} */}
+                  )}
                 </div>
                 <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
@@ -6199,12 +6315,18 @@ export function SubjectLearningInterface({
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                       Dataset Preview
                     </h4>
-                    {/* {availablePythonDatasets.length > 1 && (
+                    {availablePythonDatasets.length > 1 && (
                       <div className="flex flex-wrap justify-end gap-2">
                         {availablePythonDatasets.map((dataset) => {
                           const isActive = dataset.id === activeDatasetId;
                           const detail = pythonDatasetDetails[dataset.id];
-                          const label = detail?.name || dataset.name || dataset.table_name || "Dataset";
+                          const label =
+                            detail?.pythonVariable ||
+                            detail?.displayName ||
+                            detail?.name ||
+                            dataset.table_name ||
+                            dataset.name ||
+                            "Dataset";
                           return (
                             <button
                               key={dataset.id}
@@ -6220,13 +6342,13 @@ export function SubjectLearningInterface({
                           );
                         })}
                       </div>
-                    )} */}
+                    )}
                   </div>
                   <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                       <div className="flex flex-col">
                         <span className="text-sm font-semibold text-slate-800">
-                          {activePythonDatasetDetail?.name ||
+                          {activePythonDatasetDetail?.displayName ||
                             availablePythonDatasets.find((dataset) => dataset.id === activeDatasetId)?.name ||
                             "Dataset"}
                         </span>
@@ -6267,14 +6389,14 @@ export function SubjectLearningInterface({
                                 availablePythonDatasets[0];
                               downloadDatasetPreview({
                                 fileName:
-                                  activePythonDatasetDetail?.name ||
+                                  activePythonDatasetDetail?.displayName ||
                                   definition?.name ||
                                   definition?.table_name ||
                                   "dataset",
                                 worksheetName:
                                   activePythonDatasetDetail?.pythonVariable ||
                                   definition?.table_name ||
-                                  activePythonDatasetDetail?.name ||
+                                  activePythonDatasetDetail?.displayName ||
                                   definition?.name ||
                                   "Dataset",
                               });
