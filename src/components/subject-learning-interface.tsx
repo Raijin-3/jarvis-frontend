@@ -1911,8 +1911,42 @@ export function SubjectLearningInterface({
   const [generatingQuiz, setGeneratingQuiz] = useState<Record<string, boolean>>({});
   const [activeSectionQuizzes, setActiveSectionQuizzes] = useState<Record<string, AdaptiveQuizSectionStatus>>({});
 
+  // Authentication state (moved before callbacks that use it)
+  const [userId, setUserId] = useState<string | null>(null);
+  const isAuthenticated = useMemo(() => Boolean(userId), [userId]);
+  
+  // Get userId from Supabase
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+    let isMounted = true;
+
+    const syncSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!isMounted) return;
+        setUserId(session?.user?.id ?? null);
+      } catch (error) {
+        console.error('Failed to get session:', error);
+      }
+    };
+
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session?.user?.id ?? null);
+    });
+
+    syncSession();
+
+    return () => {
+      isMounted = false;
+      subscription?.subscription.unsubscribe();
+    };
+  }, []);
+
   const fetchAdaptiveQuizStatus = useCallback(
     async (sectionId: string, options?: { suppressUpdate?: boolean }): Promise<AdaptiveQuizSectionStatus> => {
+      if (!isAuthenticated) {
+        return { hasActiveQuiz: false };
+      }
       if (!sectionId) {
         return { hasActiveQuiz: false };
       }
@@ -1946,7 +1980,7 @@ export function SubjectLearningInterface({
         return fallback;
       }
     },
-    [],
+    [isAuthenticated],
   );
 
   // Content generation loading state
@@ -1955,6 +1989,10 @@ export function SubjectLearningInterface({
     : false;
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     const uniqueSectionIds = Array.from(
       new Set(
         (allSections || [])
@@ -1995,7 +2033,7 @@ export function SubjectLearningInterface({
     return () => {
       isCancelled = true;
     };
-  }, [allSections, fetchAdaptiveQuizStatus]);
+  }, [allSections, fetchAdaptiveQuizStatus, isAuthenticated]);
 
   // Progressive generation state
   const [generationStep, setGenerationStep] = useState<string>('');
@@ -2257,26 +2295,6 @@ export function SubjectLearningInterface({
   const [adaptiveQuizSummary, setAdaptiveQuizSummary] = useState<any>(null);
   const [submittingAdaptiveAnswer, setSubmittingAdaptiveAnswer] = useState(false);
   const [pendingAdaptiveQuestion, setPendingAdaptiveQuestion] = useState<any>(null);
-
-  // Authentication state
-  const [userId, setUserId] = useState<string | null>(null);
-  
-  // Get userId from Supabase
-  useEffect(() => {
-    const getSession = async () => {
-      try {
-        const supabase = supabaseBrowser();
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user?.id) {
-          setUserId(session.user.id);
-        }
-      } catch (error) {
-        console.error('Failed to get session:', error);
-      }
-    };
-    
-    getSession();
-  }, []);
   const [showAdaptiveExplanation, setShowAdaptiveExplanation] = useState(false);
   const [lastAnswerCorrect, setLastAnswerCorrect] = useState<boolean | null>(null);
 
@@ -2304,6 +2322,7 @@ export function SubjectLearningInterface({
 
   // Function to fetch exercise datasets
   const fetchExerciseDatasets = useCallback(async (exerciseId: string) => {
+    if (!isAuthenticated) return;
     if (loadingExerciseDatasets[exerciseId] || exerciseDatasets[exerciseId]) return;
 
     setLoadingExerciseDatasets(prev => ({ ...prev, [exerciseId]: true }));
@@ -2355,10 +2374,11 @@ export function SubjectLearningInterface({
     } finally {
       setLoadingExerciseDatasets(prev => ({ ...prev, [exerciseId]: false }));
     }
-  }, [loadingExerciseDatasets, exerciseDatasets]);
+  }, [loadingExerciseDatasets, exerciseDatasets, isAuthenticated]);
 
   // Function to fetch section quizzes
   const fetchSectionQuizzes = useCallback(async (sectionId: string) => {
+    if (!isAuthenticated) return;
     if (loadingSectionQuizzes[sectionId] || sectionQuizzes[sectionId]) return;
 
     setLoadingSectionQuizzes(prev => ({ ...prev, [sectionId]: true }));
@@ -2376,7 +2396,7 @@ export function SubjectLearningInterface({
     } finally {
       setLoadingSectionQuizzes(prev => ({ ...prev, [sectionId]: false }));
     }
-  }, [loadingSectionQuizzes, sectionQuizzes]);
+  }, [loadingSectionQuizzes, sectionQuizzes, isAuthenticated]);
 
   // SQL execution will be handled by backend API
 
@@ -2386,6 +2406,7 @@ export function SubjectLearningInterface({
 
   // Function to fetch section exercises
   const fetchSectionExercises = useCallback(async (sectionId: string) => {
+    if (!isAuthenticated) return;
     // console.log('[FETCH EXERCISES DEBUG] Called for section:', sectionId, {
     //   alreadyLoading: loadingSectionExercises[sectionId],
     //   alreadyLoaded: !!sectionExercises[sectionId],
@@ -2524,7 +2545,7 @@ export function SubjectLearningInterface({
     } finally {
       setLoadingSectionExercises(prev => ({ ...prev, [sectionId]: false }));
     }
-  }, [loadingSectionExercises, sectionExercises]);
+  }, [loadingSectionExercises, sectionExercises, isAuthenticated]);
 
   // Subject-to-exercise-type mapping
   const getExerciseTypeBySubject = useCallback((subjectTitle?: string | null) => {
@@ -2561,6 +2582,7 @@ export function SubjectLearningInterface({
       questionId: string,
       context?: { questionTitle?: string; questionType?: string | null },
     ) => {
+      if (!isAuthenticated) return;
       if (!questionId) return;
 
       const cached = questionDatasetCache[questionId];
@@ -2606,11 +2628,15 @@ export function SubjectLearningInterface({
         setLoadingDataset(false);
       }
     },
-    [questionDatasetCache, setQuestionDatasetCache],
+    [questionDatasetCache, setQuestionDatasetCache, isAuthenticated],
   );
 
   // Generation functions with progressive loading
   const handleGenerateExercise = useCallback(async (section: Section) => {
+    if (!isAuthenticated) {
+      console.warn('Attempted to generate exercise without authentication');
+      return;
+    }
     if (generatingExercise[section.id]) return;
 
     setGeneratingExercise(prev => ({ ...prev, [section.id]: true }));
@@ -2805,10 +2831,16 @@ export function SubjectLearningInterface({
     subjectId,
     getExerciseTypeBySubject,
     subjectTitle,
+    isAuthenticated,
+    userId,
   ]);
 
   // Adaptive Quiz Handlers
   const handleStartAdaptiveQuiz = useCallback(async (section: Section) => {
+    if (!isAuthenticated) {
+      console.warn('Attempted to start adaptive quiz without authentication');
+      return;
+    }
     if (generatingQuiz[section.id] || isAdaptiveQuizMode) return;
 
     setGeneratingQuiz(prev => ({ ...prev, [section.id]: true }));
@@ -2885,9 +2917,13 @@ export function SubjectLearningInterface({
     } finally {
       setGeneratingQuiz(prev => ({ ...prev, [section.id]: false }));
     }
-  }, [generatingQuiz, isAdaptiveQuizMode, fetchAdaptiveQuizStatus, courseId, subjectId]);
+  }, [generatingQuiz, isAdaptiveQuizMode, fetchAdaptiveQuizStatus, courseId, subjectId, isAuthenticated]);
 
   const handleAdaptiveQuizSubmit = useCallback(async () => {
+    if (!isAuthenticated) {
+      console.warn('Attempted to submit adaptive quiz without authentication');
+      return;
+    }
     if (
       !currentAdaptiveQuestion ||
       !adaptiveQuizSession ||
@@ -2952,6 +2988,7 @@ export function SubjectLearningInterface({
     submittingAdaptiveAnswer,
     showAdaptiveExplanation,
     fetchAdaptiveQuizStatus,
+    isAuthenticated,
   ]);
 
   const handleAdaptiveQuizNext = useCallback(() => {
@@ -3285,7 +3322,7 @@ export function SubjectLearningInterface({
   }, [selectedSectionId]);
 
   useEffect(() => {
-
+    if (!isAuthenticated) return;
     if (!selectedSection) {
 
       setSelectedResource((prev) => (prev ? null : prev));
@@ -3389,7 +3426,7 @@ export function SubjectLearningInterface({
 
     });
 
-  }, [selectedSection, fetchSectionExercises, fetchSectionQuizzes, sectionExercises]);
+  }, [selectedSection, fetchSectionExercises, fetchSectionQuizzes, sectionExercises, isAuthenticated]);
 
   // Reset quiz state when changing quizzes
   useEffect(() => {
@@ -3404,6 +3441,7 @@ export function SubjectLearningInterface({
 
   // Load quiz data when quiz is selected
   useEffect(() => {
+    if (!isAuthenticated) return;
     if (
       selectedResource?.kind === "quiz" &&
       selectedResource.resourceId &&
@@ -3423,7 +3461,7 @@ export function SubjectLearningInterface({
       };
       loadQuiz();
     }
-  }, [selectedResource, loadedQuiz, quizLoading]);
+  }, [selectedResource, loadedQuiz, quizLoading, isAuthenticated]);
 
   // Handle quiz completion in runner mode
   const handleQuizComplete = useCallback(async (sectionId: string, score: number, answers: Record<string, string[]>) => {
@@ -4176,10 +4214,11 @@ export function SubjectLearningInterface({
 
   // Fetch exercise datasets when exercise is selected
   useEffect(() => {
+    if (!isAuthenticated) return;
     if (activeExercise?.id) {
       fetchExerciseDatasets(activeExercise.id);
     }
-  }, [activeExercise?.id, fetchExerciseDatasets]);
+  }, [activeExercise?.id, fetchExerciseDatasets, isAuthenticated]);
 
   const exerciseDatasetList = useMemo(() => {
     if (!activeExercise?.id) {
@@ -8179,6 +8218,8 @@ export function SubjectLearningInterface({
           trackTitle={trackTitle}
 
           subjectTitle={subjectTitle || undefined}
+
+          canAccessApi={isAuthenticated}
 
         />
 

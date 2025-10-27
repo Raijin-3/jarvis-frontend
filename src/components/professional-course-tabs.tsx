@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookOpen, Code, HelpCircle, MessageCircle, User, Send, CheckSquare, FileText, Play } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api-client";
 
@@ -21,6 +21,7 @@ export function ProfessionalCourseTabs({
   subjectId,
   trackTitle,
   subjectTitle: subjectTitleProp,
+  canAccessApi = false,
 }: {
   courseHrefBase: string;
   sectionId?: string;
@@ -30,6 +31,7 @@ export function ProfessionalCourseTabs({
   subjectId?: string;
   trackTitle?: string;
   subjectTitle?: string;
+  canAccessApi?: boolean;
 }) {
   const [activeTab, setActiveTab] = useState<"overview" | "exercise" | "quiz" | "discussion">("overview");
   const [practiceExercises, setPracticeExercises] = useState<any[]>([]);
@@ -40,6 +42,10 @@ export function ProfessionalCourseTabs({
   // API functions
   const generatePracticeExercises = async () => {
     if (!sectionId || !courseId || !subjectId) return;
+    if (!canAccessApi) {
+      console.warn('Skipping exercise generation until authenticated');
+      return;
+    }
     
     setLoadingExercises(true);
     try {
@@ -67,6 +73,10 @@ export function ProfessionalCourseTabs({
 
   const generateQuiz = async () => {
     if (!sectionId || !courseId || !subjectId) return;
+    if (!canAccessApi) {
+      console.warn('Skipping quiz generation until authenticated');
+      return;
+    }
     
     setLoadingQuizzes(true);
     try {
@@ -107,8 +117,9 @@ export function ProfessionalCourseTabs({
     }
   };
 
-  const loadExistingExercises = async () => {
+  const loadExistingExercises = useCallback(async () => {
     if (!sectionId) return;
+    if (!canAccessApi) return;
     
     try {
       const exercises = await apiGet<any>(`/v1/sections/${sectionId}/exercises`);
@@ -122,10 +133,11 @@ export function ProfessionalCourseTabs({
     } catch (error) {
       console.error('Error loading exercises:', error);
     }
-  };
+  }, [sectionId, canAccessApi]);
 
-  const loadExistingQuizzes = async () => {
+  const loadExistingQuizzes = useCallback(async () => {
     if (!sectionId) return;
+    if (!canAccessApi) return;
     
     try {
       const quizzesResponse = await apiGet<any>(`/v1/sections/${sectionId}/quizzes`);
@@ -139,15 +151,14 @@ export function ProfessionalCourseTabs({
     } catch (error) {
       console.error('Error loading quizzes:', error);
     }
-  };
+  }, [sectionId, canAccessApi]);
 
   // Load existing content when section changes
-  useMemo(() => {
-    if (sectionId) {
-      loadExistingExercises();
-      loadExistingQuizzes();
-    }
-  }, [sectionId]);
+  useEffect(() => {
+    if (!sectionId || !canAccessApi) return;
+    loadExistingExercises();
+    loadExistingQuizzes();
+  }, [sectionId, canAccessApi, loadExistingExercises, loadExistingQuizzes]);
 
   // Enhanced discussion threads
   const [threads, setThreads] = useState<Comment[]>([
