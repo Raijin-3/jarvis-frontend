@@ -135,6 +135,15 @@ type DatasetPreview = {
   rows: unknown[][];
 };
 
+type SpreadsheetDatasetDefinition = {
+  id: string;
+  name: string;
+  description?: string;
+  preview: DatasetPreview | null;
+  tableNames: string[];
+  originalName?: string;
+};
+
 const DATASET_TIMESTAMP_COLUMNS = new Set(["InteractionDate", "ResolutionDate"]);
 
 type SqlDatasetDefinition = {
@@ -465,12 +474,14 @@ type PythonDatasetDefinition = {
   schema_info?: QuestionDatasetSchemaInfo;
   table_name?: string;
   source?: string;
+  creation_sql?: string;
 };
 
 type PythonDatasetDetail = {
   id: string;
   name: string;
   displayName: string;
+  originalName?: string;
   description?: string;
   columns: string[];
   objectRows: Record<string, unknown>[];
@@ -479,6 +490,7 @@ type PythonDatasetDetail = {
   rowCount: number;
   datasetCsv?: string;
   loadError?: string;
+  tableNames: string[];
 };
 
 type PythonDatasetLoadState = {
@@ -867,12 +879,48 @@ const buildPythonDatasetDetail = (
 
   const previewRows = objectRows.slice(0, 20).map((row) => columns.map((column) => row[column] ?? null));
 
+  const creationSqlMeta =
+    typeof dataset.creation_sql === "string" && dataset.creation_sql.trim().length > 0
+      ? dataset.creation_sql
+      : typeof schemaInfo?.creation_sql === "string" && schemaInfo.creation_sql.trim().length > 0
+      ? schemaInfo.creation_sql
+      : typeof (schemaInfo as Record<string, unknown> | undefined)?.data_creation_sql === "string"
+      ? String((schemaInfo as Record<string, unknown>).data_creation_sql)
+      : undefined;
+
+  const datasetDescriptionMeta =
+    (typeof dataset.description === "string" && dataset.description.trim().length > 0
+      ? dataset.description
+      : undefined) ??
+    (typeof (schemaInfo as Record<string, unknown> | undefined)?.dataset_description === "string"
+      ? String((schemaInfo as Record<string, unknown>).dataset_description)
+      : undefined);
+
+  const rawTableNames = extractDatasetTableNames(dataset, {
+    creationSql: creationSqlMeta ?? null,
+    description: datasetDescriptionMeta ?? null,
+  });
+  const tableNames: string[] = [];
+  const seenTableNames = new Set<string>();
+  rawTableNames.forEach((tableName) => {
+    const resolved = resolveDatasetLabel(tableName);
+    const key = normalizeDatasetLabel(resolved);
+    if (key && !seenTableNames.has(key)) {
+      seenTableNames.add(key);
+      tableNames.push(resolved);
+    }
+  });
+
+  const primaryTableName =
+    tableNames.length > 0
+      ? tableNames[0]
+      : dataset.table_name ||
+        schemaInfo?.dataset_table_name ||
+        schemaInfo?.table_name ||
+        undefined;
+
   const pythonVariable = sanitizePythonIdentifier(
-    dataset.table_name ||
-      schemaInfo?.dataset_table_name ||
-      schemaInfo?.table_name ||
-      dataset.name ||
-      `dataset_${index + 1}`,
+    primaryTableName || dataset.table_name || dataset.name || `dataset_${index + 1}`,
   );
 
   const originalName =
@@ -881,12 +929,13 @@ const buildPythonDatasetDetail = (
     dataset.table_name ||
     `Dataset ${index + 1}`;
 
-  const displayName = pythonVariable || originalName;
+  const displayName = primaryTableName || pythonVariable || originalName;
 
   return {
     id: dataset.id,
-    name: originalName,
+    name: primaryTableName || originalName,
     displayName,
+    originalName,
     description: dataset.description,
     columns,
     objectRows,
@@ -894,6 +943,7 @@ const buildPythonDatasetDetail = (
     pythonVariable,
     rowCount: objectRows.length,
     datasetCsv: csvRaw,
+    tableNames,
     loadError:
       objectRows.length === 0
         ? csvRaw
@@ -942,6 +992,149 @@ const extractTableNamesFromSql = (value?: string | null): string[] => {
   return Array.from(detectedTables);
 };
 
+const extractTableNameFromDescription = (description?: string | null): string | null => {
+  if (typeof description !== "string") {
+    return null;
+  }
+
+  const trimmed = description.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parenMatch = trimmed.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+  if (parenMatch) {
+    return parenMatch[1];
+  }
+
+  const tableMatch = trimmed.match(/\btable\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+  if (tableMatch) {
+    return tableMatch[1];
+  }
+
+  return null;
+};
+
+const extractDatasetTableNames = (
+  dataset: unknown,
+  meta?: { description?: string | null; creationSql?: string | null },
+): string[] => {
+  const normalizedNames = new Map<string, string>();
+  const addName = (value?: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (/^(dataset|table)$/i.test(trimmed)) {
+      return;
+    }
+    const key = trimmed.toLowerCase();
+    if (!normalizedNames.has(key)) {
+      normalizedNames.set(key, trimmed);
+    }
+  };
+
+  const datasetRecord =
+    dataset && typeof dataset === "object" && !Array.isArray(dataset)
+      ? (dataset as Record<string, unknown>)
+      : null;
+
+  const schemaInfo =
+    datasetRecord && typeof datasetRecord["schema_info"] === "object"
+      ? (datasetRecord["schema_info"] as QuestionDatasetSchemaInfo)
+      : null;
+
+  if (datasetRecord) {
+    addName(datasetRecord["table_name"]);
+    addName(datasetRecord["dataset_table_name"]);
+    addName((datasetRecord["tableName"] as string) ?? undefined);
+
+    const datasetTables = datasetRecord["tables"];
+    if (Array.isArray(datasetTables)) {
+      datasetTables.forEach(addName);
+    }
+
+    const datasetTableNames = datasetRecord["table_names"];
+    if (Array.isArray(datasetTableNames)) {
+      datasetTableNames.forEach(addName);
+    }
+
+    const datasetDatasetTables = datasetRecord["dataset_tables"];
+    if (Array.isArray(datasetDatasetTables)) {
+      datasetDatasetTables.forEach(addName);
+    }
+  }
+
+  if (schemaInfo) {
+    addName(schemaInfo.table_name as string | undefined);
+    addName(schemaInfo.dataset_table_name);
+
+    const schemaTables = (schemaInfo as Record<string, unknown>)?.tables;
+    if (Array.isArray(schemaTables)) {
+      (schemaTables as unknown[]).forEach(addName);
+    }
+
+    const schemaDatasetTables = (schemaInfo as Record<string, unknown>)?.dataset_tables;
+    if (Array.isArray(schemaDatasetTables)) {
+      (schemaDatasetTables as unknown[]).forEach(addName);
+    }
+  }
+
+  const collectCreationSql = (value?: unknown) => {
+    if (typeof value === "string" && value.trim().length > 0) {
+      extractTableNamesFromSql(value).forEach(addName);
+    }
+  };
+
+  if (datasetRecord) {
+    collectCreationSql(datasetRecord["creation_sql"]);
+    collectCreationSql(datasetRecord["data_creation_sql"]);
+    collectCreationSql(datasetRecord["sql"]);
+    collectCreationSql(datasetRecord["dataset_sql"]);
+  }
+
+  if (schemaInfo) {
+    collectCreationSql(schemaInfo.creation_sql);
+    const schemaDataCreationSql = (schemaInfo as Record<string, unknown>)?.data_creation_sql;
+    if (typeof schemaDataCreationSql === "string") {
+      collectCreationSql(schemaDataCreationSql);
+    }
+  }
+
+  if (typeof dataset === "string") {
+    collectCreationSql(dataset);
+  }
+
+  if (meta?.creationSql) {
+    collectCreationSql(meta.creationSql);
+  }
+
+  const parseAndAdd = (value?: string | null) => {
+    const tableName = extractTableNameFromDescription(value);
+    if (tableName) {
+      addName(tableName);
+    }
+  };
+
+  if (datasetRecord) {
+    parseAndAdd(datasetRecord["dataset_description"] as string | undefined);
+    parseAndAdd(datasetRecord["description"] as string | undefined);
+  }
+
+  if (schemaInfo) {
+    parseAndAdd((schemaInfo as Record<string, unknown>)?.dataset_description as string | undefined);
+  }
+
+  if (meta?.description) {
+    parseAndAdd(meta.description);
+  }
+
+  return Array.from(normalizedNames.values());
+};
+
 const inferTableNameFromSql = (value?: string | null): string | undefined => {
   const tables = extractTableNamesFromSql(value);
   return tables.length > 0 ? tables[0] : undefined;
@@ -962,6 +1155,34 @@ const deriveDatasetKey = (dataset: {
     return `sql:${dataset.creation_sql}`;
   }
   return undefined;
+};
+
+const normalizeDatasetLabel = (value?: string | null): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : "";
+};
+
+const resolveDatasetLabel = (value?: string | null, fallback = "Dataset"): string => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+};
+
+const dedupeByLabel = <T,>(items: T[], getLabel: (item: T) => string): T[] => {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = normalizeDatasetLabel(getLabel(item));
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 };
 
 const normalizeSectionExerciseQuestion = (
@@ -1629,6 +1850,14 @@ export function SubjectLearningInterface({
   const [datasetPreviewError, setDatasetPreviewError] = useState<string | null>(null);
   const [downloadingDataset, setDownloadingDataset] = useState(false);
   const [pythonDatasetStatus, setPythonDatasetStatus] = useState<Record<string, PythonDatasetLoadState>>({});
+  const datasetPreviewCacheRef = useRef<Record<string, Record<string, DatasetPreview>>>({});
+  const activeDatasetPreviewRequestRef = useRef<string | null>(null);
+  const datasetAvailabilitySignatureRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    datasetPreviewCacheRef.current = {};
+    activeDatasetPreviewRequestRef.current = null;
+  }, [courseId, subjectId]);
 
   const downloadDatasetPreview = useCallback(
     async ({
@@ -1777,6 +2006,7 @@ export function SubjectLearningInterface({
   const isSpreadsheetQuestion = selectedQuestionType === "google_sheets";
   const isPythonLikeQuestion =
     selectedQuestionType === "python" || selectedQuestionType === "statistics";
+  const shouldUseDuckDb = selectedQuestionType === "sql" || isPythonLikeQuestion;
 
 
   // Function to fetch exercise datasets
@@ -3116,6 +3346,33 @@ export function SubjectLearningInterface({
     );
   }, [selectedResource, selectedSection, sectionExercises]);
 
+  const datasetCacheScopeKey = useMemo(() => {
+    const questionExerciseId =
+      selectedQuestionForPopup && (selectedQuestionForPopup as any)?.exerciseId
+        ? String((selectedQuestionForPopup as any).exerciseId)
+        : null;
+    if (questionExerciseId) {
+      return `exercise:${questionExerciseId}`;
+    }
+    if (activeExercise?.id) {
+      return `exercise:${String(activeExercise.id)}`;
+    }
+    return `subject:${courseId}:${subjectId}`;
+  }, [
+    activeExercise?.id,
+    courseId,
+    subjectId,
+    selectedQuestionForPopup ? (selectedQuestionForPopup as any)?.exerciseId : null,
+  ]);
+
+  useEffect(() => {
+    if (!datasetPreviewCacheRef.current[datasetCacheScopeKey]) {
+      datasetPreviewCacheRef.current[datasetCacheScopeKey] = {};
+    }
+    datasetAvailabilitySignatureRef.current = null;
+    activeDatasetPreviewRequestRef.current = null;
+  }, [datasetCacheScopeKey]);
+
   const activeExerciseQuestions = useMemo(() => {
     if (!activeExercise) {
       return [];
@@ -3569,15 +3826,11 @@ export function SubjectLearningInterface({
 
   const spreadsheetDatasets = useMemo(
     () =>
-      isSpreadsheetQuestion
+          isSpreadsheetQuestion
         ? (() => {
-            const datasets: Array<{
-              id: string;
-              name: string;
-              description?: string;
-              preview: DatasetPreview | null;
-            }> = [];
-            const seen = new Set<string>();
+            const datasets: SpreadsheetDatasetDefinition[] = [];
+            const seenIds = new Set<string>();
+            const seenLabels = new Set<string>();
 
             const pushDataset = (
               rawDataset: unknown,
@@ -3594,45 +3847,71 @@ export function SubjectLearningInterface({
               const preview = buildDatasetPreviewFromRecord(rawDataset);
               const isObject =
                 rawDataset && typeof rawDataset === "object" && !Array.isArray(rawDataset);
+              const datasetRecord = isObject ? (rawDataset as Record<string, unknown>) : null;
 
               const candidateId =
                 (typeof meta.id === "string" && meta.id.trim()) ||
                 (isObject &&
-                  typeof (rawDataset as Record<string, unknown>).id === "string" &&
-                  (rawDataset as Record<string, unknown>).id!.trim()) ||
+                  typeof datasetRecord?.id === "string" &&
+                  (datasetRecord.id as string).trim()) ||
                 (isObject &&
-                  typeof (rawDataset as Record<string, unknown>).table_name === "string" &&
-                  (rawDataset as Record<string, unknown>).table_name!.trim()) ||
+                  typeof datasetRecord?.table_name === "string" &&
+                  (datasetRecord.table_name as string).trim()) ||
                 undefined;
 
               let datasetId = candidateId ?? `dataset-${datasets.length}`;
-              while (seen.has(datasetId)) {
+              while (seenIds.has(datasetId)) {
                 datasetId = `${datasetId}-${datasets.length}`;
               }
-              seen.add(datasetId);
+              seenIds.add(datasetId);
 
-              const datasetName =
+              const originalName =
                 (typeof meta.name === "string" && meta.name.trim()) ||
                 (isObject &&
-                  typeof (rawDataset as Record<string, unknown>).name === "string" &&
-                  (rawDataset as Record<string, unknown>).name!.trim()) ||
+                  typeof datasetRecord?.name === "string" &&
+                  (datasetRecord.name as string).trim()) ||
                 (isObject &&
-                  typeof (rawDataset as Record<string, unknown>).table_name === "string" &&
-                  (rawDataset as Record<string, unknown>).table_name!.trim()) ||
+                  typeof datasetRecord?.table_name === "string" &&
+                  (datasetRecord.table_name as string).trim()) ||
                 undefined;
 
               const datasetDescription =
                 (typeof meta.description === "string" && meta.description.trim()) ||
                 (isObject &&
-                  typeof (rawDataset as Record<string, unknown>).description === "string" &&
-                  (rawDataset as Record<string, unknown>).description!.trim()) ||
+                  typeof datasetRecord?.description === "string" &&
+                  (datasetRecord.description as string).trim()) ||
                 undefined;
+
+              const rawTableNames = extractDatasetTableNames(rawDataset, {
+                description: datasetDescription ?? null,
+              });
+              const tableNames: string[] = [];
+              const seenTableNames = new Set<string>();
+              rawTableNames.forEach((tableName) => {
+                const resolved = resolveDatasetLabel(tableName);
+                const key = normalizeDatasetLabel(resolved);
+                if (key && !seenTableNames.has(key)) {
+                  seenTableNames.add(key);
+                  tableNames.push(resolved);
+                }
+              });
+
+              const resolvedName = tableNames[0] ?? resolveDatasetLabel(originalName);
+              const normalizedLabel = normalizeDatasetLabel(resolvedName);
+              if (normalizedLabel && seenLabels.has(normalizedLabel)) {
+                return;
+              }
+              if (normalizedLabel) {
+                seenLabels.add(normalizedLabel);
+              }
 
               datasets.push({
                 id: datasetId,
-                name: datasetName || "Dataset",
+                name: resolvedName,
                 description: datasetDescription,
                 preview,
+                tableNames,
+                originalName: originalName ?? undefined,
               });
             };
 
@@ -3676,8 +3955,8 @@ export function SubjectLearningInterface({
     [exerciseDatasetList, isSpreadsheetQuestion, questionDataset, selectedQuestionForPopup],
   );
 
-  const availableSqlDatasets = useMemo(() => {
-    if (selectedQuestionType !== "sql") {
+  const duckDbDatasets = useMemo(() => {
+    if (!shouldUseDuckDb) {
       return [];
     }
 
@@ -3725,21 +4004,54 @@ export function SubjectLearningInterface({
       datasets.push(normalizedDataset);
     };
 
-    if (questionDataset) {
+    exerciseDatasetList.forEach((dataset: any, index: number) => {
       pushDataset({
-        id: `question-dataset:${questionDataset.id ?? "inline"}`,
-        name: questionDataset.name || "Question Dataset",
-        description: questionDataset.description || "Generated dataset for this question",
-        placeholders: questionDataset.columns || questionDataset.placeholders,
+        id: `exercise-${activeExercise?.id ?? "exercise"}-${dataset.id ?? index}`,
+        name: dataset.name || `Dataset ${index + 1}`,
+        description: dataset.description,
+        placeholders: dataset.placeholders || dataset.columns,
         creation_sql:
-          typeof questionDataset?.schema_info?.creation_sql === "string"
-            ? questionDataset.schema_info.creation_sql
-            : typeof questionDataset?.creation_sql === "string"
-            ? questionDataset.creation_sql
-            : undefined,
-        table_name: questionDataset.table_name,
-        data: questionDataset.data,
-        columns: questionDataset.columns,
+          dataset.creation_sql ??
+          dataset.sql ??
+          dataset.data ??
+          dataset.schema_info?.creation_sql,
+        table_name: dataset.table_name,
+        data: dataset.data,
+        columns: dataset.columns,
+      });
+    });
+
+    if (activeExercise?.dataset && typeof activeExercise.dataset === "string") {
+      pushDataset({
+        id: `active-exercise-dataset:${activeExercise.id}`,
+        name: activeExercise.title || "Exercise Dataset",
+        description: "Dataset provided at exercise level",
+        creation_sql: activeExercise.data,
+      });
+    }
+
+    if (currentExerciseData?.context?.data_creation_sql) {
+      pushDataset({
+        id: `exercise-context:${currentExerciseData.exercise?.id ?? "context"}`,
+        name: currentExerciseData.exercise?.title || "Generated Dataset",
+        description: currentExerciseData.context?.dataset_description,
+        placeholders: Array.isArray(currentExerciseData.context?.expected_cols_list)
+          ? currentExerciseData.context.expected_cols_list.flat()
+          : undefined,
+        creation_sql: currentExerciseData.context.data_creation_sql,
+        dataset_csv_raw: currentExerciseData.context.dataset_csv_raw,
+        columns: currentExerciseData.context.dataset_columns,
+      });
+    }
+
+    const questionExerciseDataset = (selectedQuestionForPopup as any)?.exerciseDataset;
+    if (typeof questionExerciseDataset === "string" && questionExerciseDataset.trim()) {
+      pushDataset({
+        id: `question-exercise:${selectedQuestionForPopup?.id ?? "inline"}`,
+        name: selectedQuestionForPopup?.exerciseTitle || "Exercise Dataset",
+        description: "Exercise-level dataset",
+        creation_sql: questionExerciseDataset,
+        dataset_csv_raw: extractCsvFromSource(questionExerciseDataset),
       });
     }
 
@@ -3769,60 +4081,27 @@ export function SubjectLearningInterface({
       });
     }
 
-    const questionExerciseDataset = (selectedQuestionForPopup as any)?.exerciseDataset;
-    if (typeof questionExerciseDataset === "string" && questionExerciseDataset.trim()) {
+    if (questionDataset) {
       pushDataset({
-        id: `question-exercise:${selectedQuestionForPopup?.id ?? "inline"}`,
-        name: selectedQuestionForPopup?.exerciseTitle || "Exercise Dataset",
-        description: "Exercise-level dataset",
-        creation_sql: questionExerciseDataset,
-        dataset_csv_raw: extractCsvFromSource(questionExerciseDataset),
-      });
-    }
-
-    if (currentExerciseData?.context?.data_creation_sql) {
-      pushDataset({
-        id: `exercise-context:${currentExerciseData.exercise?.id ?? "context"}`,
-        name: currentExerciseData.exercise?.title || "Generated Dataset",
-        description: currentExerciseData.context?.dataset_description,
-        placeholders: Array.isArray(currentExerciseData.context?.expected_cols_list)
-          ? currentExerciseData.context.expected_cols_list.flat()
-          : undefined,
-        creation_sql: currentExerciseData.context.data_creation_sql,
-        dataset_csv_raw: currentExerciseData.context.dataset_csv_raw,
-        columns: currentExerciseData.context.dataset_columns,
-      });
-    }
-
-    if (activeExercise?.dataset && typeof activeExercise.dataset === "string") {
-      pushDataset({
-        id: `active-exercise-dataset:${activeExercise.id}`,
-        name: activeExercise.title || "Exercise Dataset",
-        description: "Dataset provided at exercise level",
-        creation_sql: activeExercise.data,
-      });
-    }
-
-    exerciseDatasetList.forEach((dataset: any, index: number) => {
-      pushDataset({
-        id: `exercise-${activeExercise?.id ?? "exercise"}-${dataset.id ?? index}`,
-        name: dataset.name || `Dataset ${index + 1}`,
-        description: dataset.description,
-        placeholders: dataset.placeholders || dataset.columns,
+        id: `question-dataset:${questionDataset.id ?? "inline"}`,
+        name: questionDataset.name || "Question Dataset",
+        description: questionDataset.description || "Generated dataset for this question",
+        placeholders: questionDataset.columns || questionDataset.placeholders,
         creation_sql:
-          dataset.creation_sql ??
-          dataset.sql ??
-          dataset.data ??
-          dataset.schema_info?.creation_sql,
-        table_name: dataset.table_name,
-        data: dataset.data,
-        columns: dataset.columns,
+          typeof questionDataset?.schema_info?.creation_sql === "string"
+            ? questionDataset.schema_info.creation_sql
+            : typeof questionDataset?.creation_sql === "string"
+            ? questionDataset.creation_sql
+            : undefined,
+        table_name: questionDataset.table_name,
+        data: questionDataset.data,
+        columns: questionDataset.columns,
       });
-    });
+    }
 
     return datasets;
   }, [
-    selectedQuestionType,
+    shouldUseDuckDb,
     questionDataset,
     selectedQuestionForPopup,
     currentExerciseData,
@@ -3878,6 +4157,12 @@ export function SubjectLearningInterface({
         schema_info: questionDataset.schema_info,
         table_name: questionDataset.table_name,
         source: "question",
+        creation_sql:
+          typeof questionDataset?.schema_info?.creation_sql === "string"
+            ? questionDataset.schema_info.creation_sql
+            : typeof questionDataset?.creation_sql === "string"
+            ? questionDataset.creation_sql
+            : undefined,
       });
     }
 
@@ -3901,6 +4186,12 @@ export function SubjectLearningInterface({
         schema_info: inlineDataset.schema_info,
         table_name: inlineDataset.table_name,
         source: "question-inline",
+        creation_sql:
+          typeof inlineDataset.creation_sql === "string"
+            ? inlineDataset.creation_sql
+            : typeof inlineDataset.sql === "string"
+            ? inlineDataset.sql
+            : undefined,
       });
     }
 
@@ -3929,18 +4220,28 @@ export function SubjectLearningInterface({
         schema_info: dataset.schema_info,
         table_name: dataset.table_name,
         source: "exercise",
+        creation_sql:
+          typeof dataset.creation_sql === "string"
+            ? dataset.creation_sql
+            : typeof dataset.sql === "string"
+            ? dataset.sql
+            : typeof dataset.data === "string"
+            ? dataset.data
+            : typeof dataset?.schema_info?.creation_sql === "string"
+            ? dataset.schema_info.creation_sql
+            : undefined,
       });
     });
 
     return datasets;
   }, [isPythonLikeQuestion, questionDataset, selectedQuestionForPopup, exerciseDatasetList]);
 
-  const sqlDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
-    if (selectedQuestionType !== "sql") {
+  const duckDbDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
+    if (!shouldUseDuckDb) {
       return [];
     }
 
-    return availableSqlDatasets.flatMap((dataset) => {
+    const variants = duckDbDatasets.flatMap((dataset) => {
       const datasetKey =
         dataset.cacheKey ??
         deriveDatasetKey({
@@ -3968,13 +4269,13 @@ export function SubjectLearningInterface({
       );
 
       if (candidateTables.length === 0) {
-        const displayName = dataset.name || dataset.table_name || "Dataset";
+        const displayLabel = resolveDatasetLabel(dataset.name || dataset.table_name || "Dataset");
         return [
           {
             ...dataset,
             id: dataset.id,
             baseDatasetId: dataset.id,
-            displayName,
+            displayName: displayLabel,
             resolvedTableName: dataset.table_name,
           },
         ];
@@ -3983,15 +4284,21 @@ export function SubjectLearningInterface({
       const baseName = dataset.name || dataset.table_name || "Dataset";
       const hasMultipleTables = candidateTables.length > 1;
 
-      return candidateTables.map<SqlDatasetVariant>((tableName) => ({
-        ...dataset,
-        id: `${dataset.id}::${tableName}`,
-        baseDatasetId: dataset.id,
-        displayName: hasMultipleTables ? tableName : baseName,
-        resolvedTableName: tableName,
-      }));
+      return candidateTables.map<SqlDatasetVariant>((tableName) => {
+        const rawLabel = hasMultipleTables ? tableName : baseName;
+        const displayLabel = resolveDatasetLabel(rawLabel);
+        return {
+          ...dataset,
+          id: `${dataset.id}::${tableName}`,
+          baseDatasetId: dataset.id,
+          displayName: displayLabel,
+          resolvedTableName: tableName,
+        };
+      });
     });
-  }, [availableSqlDatasets, duckDbDatasetTables, selectedQuestionType]);
+
+    return dedupeByLabel(variants, (variant) => variant.displayName ?? "Dataset");
+  }, [duckDbDatasets, duckDbDatasetTables, shouldUseDuckDb]);
 
   const pythonDatasetDetails = useMemo(() => {
     if (!isPythonLikeQuestion) {
@@ -4006,61 +4313,85 @@ export function SubjectLearningInterface({
   }, [availablePythonDatasets, isPythonLikeQuestion]);
 
   useEffect(() => {
-    if (selectedQuestionType === "sql") {
-      if (sqlDatasetVariants.length === 0) {
-        setActiveDatasetId(null);
-        setDatasetPreview(null);
-        setDatasetPreviewError(null);
-        return;
-      }
+    const variantKey =
+      shouldUseDuckDb && duckDbDatasetVariants.length > 0
+        ? duckDbDatasetVariants.map((dataset) => dataset.id).join("|")
+        : "";
+    const pythonKey =
+      isPythonLikeQuestion && availablePythonDatasets.length > 0
+        ? availablePythonDatasets.map((dataset) => dataset.id).join("|")
+        : "";
+    const signature = [
+      datasetCacheScopeKey,
+      selectedQuestionType ?? "unknown",
+      String(shouldUseDuckDb),
+      variantKey,
+      pythonKey,
+      String(isSpreadsheetQuestion),
+      String(isPythonLikeQuestion),
+    ].join(";");
 
-      setActiveDatasetId((prev) => {
-        if (prev && sqlDatasetVariants.some((dataset) => dataset.id === prev)) {
-          return prev;
-        }
-        return sqlDatasetVariants[0]?.id ?? null;
-      });
+    if (datasetAvailabilitySignatureRef.current === signature) {
       return;
     }
-
-    if (isPythonLikeQuestion) {
-      if (availablePythonDatasets.length === 0) {
-        setActiveDatasetId(null);
-        setDatasetPreview(null);
-        setDatasetPreviewError(null);
-        return;
-      }
-
-      setDatasetPreview(null);
-      setDatasetPreviewError(null);
-      setActiveDatasetId((prev) => {
-        if (prev && availablePythonDatasets.some((dataset) => dataset.id === prev)) {
-          return prev;
-        }
-        return availablePythonDatasets[0]?.id ?? null;
-      });
-      return;
-    }
+    datasetAvailabilitySignatureRef.current = signature;
 
     if (selectedQuestionType === "google_sheets") {
       return;
     }
 
-    setActiveDatasetId(null);
-    setDatasetPreview(null);
-    setDatasetPreviewError(null);
+    let nextActiveId: string | null = activeDatasetId;
+    let shouldResetPreview = false;
+
+    if (shouldUseDuckDb) {
+      if (duckDbDatasetVariants.length > 0) {
+        const currentMatches =
+          nextActiveId && duckDbDatasetVariants.some((dataset) => dataset.id === nextActiveId);
+        if (!currentMatches) {
+          nextActiveId = duckDbDatasetVariants[0]?.id ?? null;
+          shouldResetPreview = true;
+        }
+      } else if (isPythonLikeQuestion && availablePythonDatasets.length > 0) {
+        const currentMatches =
+          nextActiveId && availablePythonDatasets.some((dataset) => dataset.id === nextActiveId);
+        if (!currentMatches) {
+          nextActiveId = availablePythonDatasets[0]?.id ?? null;
+          shouldResetPreview = true;
+        }
+      } else {
+        if (nextActiveId !== null) {
+          shouldResetPreview = true;
+        }
+        nextActiveId = null;
+      }
+    } else if (!isSpreadsheetQuestion) {
+      if (nextActiveId !== null) {
+        shouldResetPreview = true;
+      }
+      nextActiveId = null;
+    }
+
+    if (nextActiveId !== activeDatasetId) {
+      setActiveDatasetId(nextActiveId);
+    }
+
+    if (shouldResetPreview) {
+      setDatasetPreview(null);
+      setDatasetPreviewError(null);
+    }
   }, [
+    activeDatasetId,
     availablePythonDatasets,
-    sqlDatasetVariants,
-    selectedQuestionForPopup?.id,
+    duckDbDatasetVariants,
     isPythonLikeQuestion,
+    isSpreadsheetQuestion,
     selectedQuestionType,
+    shouldUseDuckDb,
+    datasetCacheScopeKey,
   ]);
 
   const loadDatasetPreview = useCallback(
     async (datasetId: string | null) => {
-      setLoadingDatasetPreview(true);
-
       if (selectedQuestionType === "google_sheets") {
         setLoadingDatasetPreview(false);
         return;
@@ -4070,56 +4401,76 @@ export function SubjectLearningInterface({
         setDatasetPreview(null);
         setDatasetPreviewError(null);
         setLoadingDatasetPreview(false);
+        activeDatasetPreviewRequestRef.current = null;
         return;
       }
 
-      if (isPythonLikeQuestion) {
-        try {
-          const detail = pythonDatasetDetails[datasetId];
-          if (!detail) {
-            setDatasetPreview(null);
-            setDatasetPreviewError("Dataset preview is not available.");
-            return;
-          }
-
-          if (detail.previewRows.length > 0 && detail.columns.length > 0) {
-            setDatasetPreview({
-              columns: detail.columns,
-              rows: detail.previewRows,
-            });
-            setDatasetPreviewError(null);
-          } else {
-            setDatasetPreview(null);
-            setDatasetPreviewError(
-              detail.loadError ?? "Preview data is not available for this dataset yet.",
-            );
-          }
-        } finally {
-          setLoadingDatasetPreview(false);
-        }
-        return;
-      }
-
-      if (selectedQuestionType !== "sql") {
-        setDatasetPreview(null);
-        setDatasetPreviewError(null);
-        setLoadingDatasetPreview(false);
-        return;
-      }
-
-      const targetDataset = sqlDatasetVariants.find((dataset) => dataset.id === datasetId);
-      if (!targetDataset) {
-        setDatasetPreview(null);
-        setDatasetPreviewError(null);
-        setLoadingDatasetPreview(false);
-        return;
-      }
-
+      const variant = duckDbDatasetVariants.find((dataset) => dataset.id === datasetId);
+      const baseDatasetId = variant?.baseDatasetId ?? datasetId;
       const baseDataset =
-        availableSqlDatasets.find((dataset) => dataset.id === targetDataset.baseDatasetId) ??
-        targetDataset;
+        duckDbDatasets.find((dataset) => dataset.id === baseDatasetId) ?? variant ?? null;
+      const pythonDetail =
+        isPythonLikeQuestion && baseDatasetId
+          ? pythonDatasetDetails[baseDatasetId]
+          : undefined;
 
-      setDatasetPreviewError(null);
+      const scopeKey = datasetCacheScopeKey;
+      if (!datasetPreviewCacheRef.current[scopeKey]) {
+        datasetPreviewCacheRef.current[scopeKey] = {};
+      }
+      const scopeCache = datasetPreviewCacheRef.current[scopeKey];
+
+      const datasetCacheKey =
+        variant?.cacheKey ??
+        baseDataset?.cacheKey ??
+        deriveDatasetKey({
+          id: baseDatasetId ?? baseDataset?.id ?? variant?.id ?? datasetId,
+          table_name: variant?.resolvedTableName ?? baseDataset?.table_name ?? variant?.table_name,
+          creation_sql: baseDataset?.creation_sql ?? variant?.creation_sql,
+        });
+
+      const tableKey =
+        variant?.resolvedTableName ??
+        baseDataset?.table_name ??
+        (Array.isArray(pythonDetail?.tableNames) && pythonDetail.tableNames.length > 0
+          ? pythonDetail.tableNames[0]
+          : null);
+      const cacheKeyBase = String(datasetCacheKey ?? baseDatasetId ?? datasetId);
+      const cacheKey = tableKey ? `${cacheKeyBase}::${tableKey}` : cacheKeyBase;
+      const requestToken = `${scopeKey}::${cacheKey}`;
+
+      const cachedPreview = scopeCache?.[cacheKey];
+      if (cachedPreview) {
+        activeDatasetPreviewRequestRef.current = requestToken;
+        setDatasetPreview(cachedPreview);
+        setDatasetPreviewError(null);
+        setLoadingDatasetPreview(false);
+        return;
+      }
+
+      setLoadingDatasetPreview(true);
+      activeDatasetPreviewRequestRef.current = requestToken;
+
+      const finalize = (
+        preview: DatasetPreview | null,
+        error: string | null,
+        options: { cache?: boolean } = {},
+      ) => {
+        if (activeDatasetPreviewRequestRef.current !== requestToken) {
+          return;
+        }
+
+        setDatasetPreview(preview);
+        setDatasetPreviewError(error);
+        setLoadingDatasetPreview(false);
+
+        if (preview && options.cache !== false) {
+          datasetPreviewCacheRef.current[scopeKey] = {
+            ...datasetPreviewCacheRef.current[scopeKey],
+            [cacheKey]: preview,
+          };
+        }
+      };
 
       const normalizeRowValues = (row: unknown, columns: string[]): unknown[] => {
         if (Array.isArray(row)) {
@@ -4137,101 +4488,152 @@ export function SubjectLearningInterface({
         return columns.map(() => row ?? null);
       };
 
-      try {
-        const datasetKey =
-          targetDataset.cacheKey ??
-          baseDataset.cacheKey ??
-          deriveDatasetKey({
-            id: targetDataset.baseDatasetId ?? baseDataset.id,
-            table_name: targetDataset.resolvedTableName ?? baseDataset.table_name,
-            creation_sql: baseDataset.creation_sql,
-          });
-
-        const mappedTables = datasetKey ? duckDbDatasetTables[datasetKey] : undefined;
-        const preferredTableNames = Array.from(
-          new Set(
-            [
-              targetDataset.resolvedTableName,
-              ...(Array.isArray(mappedTables) ? mappedTables : []),
-              baseDataset.table_name,
-            ].filter(
-              (value): value is string => typeof value === "string" && value.trim().length > 0,
-            ),
-          ),
-        );
-        const mappedTableName = preferredTableNames.find((tableName) =>
-          duckDbTables.includes(tableName),
-        );
-
-        if (
-          mappedTableName &&
-          duckDbTables.includes(mappedTableName) &&
-          isDuckDbReady &&
-          !isDuckDbLoading &&
-          !isPreparingDuckDb
-        ) {
-          const escapeIdentifier = (value: string) => value.replace(/"/g, '""');
-          const previewQuery = `SELECT * FROM "${escapeIdentifier(String(mappedTableName))}" LIMIT 20;`;
-          const result = await executeDuckDbQuery(previewQuery);
-          if (result.success && result.result) {
-            setDatasetPreview({
-              columns: result.result.columns ?? [],
-              rows: (result.result.rows ?? []).map((row) => (Array.isArray(row) ? row : [row])),
-            });
-            setLoadingDatasetPreview(false);
-            return;
-          }
+      const fallbackToPythonDetail = () => {
+        if (!isPythonLikeQuestion) {
+          finalize(null, "Preview data is not available for this dataset yet.", { cache: false });
+          return;
         }
 
-        const fallbackData = Array.isArray(targetDataset.data)
-          ? targetDataset.data
-          : Array.isArray(baseDataset.data)
-          ? baseDataset.data
-          : [];
+        if (!pythonDetail) {
+          finalize(null, "Dataset preview is not available.", { cache: false });
+          return;
+        }
 
-        if (fallbackData.length > 0) {
-          let columns = Array.isArray(targetDataset.columns)
-            ? targetDataset.columns
-            : Array.isArray(baseDataset.columns)
-            ? baseDataset.columns
-            : [];
-          if (!columns.length) {
-            const firstRow = fallbackData[0];
-            if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
-              columns = Object.keys(firstRow);
+        if (pythonDetail.previewRows.length > 0 && pythonDetail.columns.length > 0) {
+          finalize(
+            {
+              columns: pythonDetail.columns,
+              rows: pythonDetail.previewRows,
+            },
+            null,
+          );
+        } else {
+          finalize(
+            null,
+            pythonDetail.loadError ?? "Preview data is not available for this dataset yet.",
+            { cache: false },
+          );
+        }
+      };
+
+      if (shouldUseDuckDb && baseDataset) {
+        try {
+          const datasetKey =
+            variant?.cacheKey ??
+            baseDataset.cacheKey ??
+            deriveDatasetKey({
+              id: baseDatasetId ?? baseDataset.id,
+              table_name: variant?.resolvedTableName ?? baseDataset.table_name,
+              creation_sql: baseDataset.creation_sql,
+            });
+
+          const mappedTables = datasetKey ? duckDbDatasetTables[datasetKey] : undefined;
+          const preferredTableNames = Array.from(
+            new Set(
+              [
+                variant?.resolvedTableName,
+                ...(Array.isArray(mappedTables) ? mappedTables : []),
+                baseDataset.table_name,
+              ].filter(
+                (value): value is string => typeof value === "string" && value.trim().length > 0,
+              ),
+            ),
+          );
+          const mappedTableName = preferredTableNames.find((tableName) =>
+            duckDbTables.includes(tableName),
+          );
+
+          if (
+            mappedTableName &&
+            duckDbTables.includes(mappedTableName) &&
+            isDuckDbReady &&
+            !isDuckDbLoading &&
+            !isPreparingDuckDb
+          ) {
+            const escapeIdentifier = (value: string) => value.replace(/"/g, '""');
+            const previewQuery = `SELECT * FROM "${escapeIdentifier(String(mappedTableName))}" LIMIT 20;`;
+            const result = await executeDuckDbQuery(previewQuery);
+            if (result.success && result.result) {
+              finalize(
+                {
+                  columns: result.result.columns ?? [],
+                  rows: (result.result.rows ?? []).map((row) =>
+                    Array.isArray(row) ? row : [row],
+                  ),
+                },
+                null,
+              );
+              return;
             }
           }
 
-          if (!columns.length && Array.isArray(fallbackData[0])) {
-            columns = (fallbackData[0] as unknown[]).map((_, index) => `column_${index + 1}`);
+          const fallbackData = Array.isArray(variant?.data)
+            ? variant!.data
+            : Array.isArray(baseDataset.data)
+            ? baseDataset.data
+            : [];
+
+          if (fallbackData.length > 0) {
+            let columns = Array.isArray(variant?.columns)
+              ? variant!.columns
+              : Array.isArray(baseDataset.columns)
+              ? baseDataset.columns
+              : [];
+            if (!columns.length) {
+              const firstRow = fallbackData[0];
+              if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
+                columns = Object.keys(firstRow);
+              }
+            }
+
+            if (!columns.length && Array.isArray(fallbackData[0])) {
+              columns = (fallbackData[0] as unknown[]).map((_, index) => `column_${index + 1}`);
+            }
+
+            if (columns.length) {
+              finalize(
+                {
+                  columns,
+                  rows: fallbackData.slice(0, 20).map((row) => normalizeRowValues(row, columns)),
+                },
+                null,
+              );
+              return;
+            }
           }
 
-          if (columns.length) {
-            setDatasetPreview({
-              columns,
-              rows: fallbackData.slice(0, 20).map((row) => normalizeRowValues(row, columns)),
-            });
-            setLoadingDatasetPreview(false);
+          if (isPythonLikeQuestion) {
+            fallbackToPythonDetail();
             return;
           }
-        }
 
-        setDatasetPreview(null);
-        setDatasetPreviewError("Preview data is not available for this dataset yet.");
-      } catch (error) {
-        console.error("Failed to load dataset preview:", error);
-        setDatasetPreview(null);
-        setDatasetPreviewError(
-          error instanceof Error ? error.message : "Unable to load dataset preview.",
-        );
-      } finally {
-        setLoadingDatasetPreview(false);
+          finalize(null, "Preview data is not available for this dataset yet.", { cache: false });
+        } catch (error) {
+          console.error("Failed to load dataset preview:", error);
+          if (isPythonLikeQuestion) {
+            fallbackToPythonDetail();
+          } else {
+            finalize(
+              null,
+              error instanceof Error ? error.message : "Unable to load dataset preview.",
+              { cache: false },
+            );
+          }
+        }
+        return;
       }
+
+      if (isPythonLikeQuestion) {
+        fallbackToPythonDetail();
+        return;
+      }
+
+      finalize(null, null, { cache: false });
     },
     [
-      availableSqlDatasets,
+      duckDbDatasetVariants,
+      duckDbDatasets,
       pythonDatasetDetails,
-      sqlDatasetVariants,
       duckDbDatasetTables,
       duckDbTables,
       executeDuckDbQuery,
@@ -4240,6 +4642,8 @@ export function SubjectLearningInterface({
       isPreparingDuckDb,
       isPythonLikeQuestion,
       selectedQuestionType,
+      shouldUseDuckDb,
+      datasetCacheScopeKey,
     ],
   );
 
@@ -4421,27 +4825,105 @@ export function SubjectLearningInterface({
     isPythonLikeQuestion,
   ]);
 
-  const activePythonDatasetDetail =
+  const activePythonVariant =
     isPythonLikeQuestion && activeDatasetId
-      ? pythonDatasetDetails[activeDatasetId]
+      ? duckDbDatasetVariants.find((dataset) => dataset.id === activeDatasetId)
+      : undefined;
+  const activePythonBaseDatasetId =
+    isPythonLikeQuestion && activeDatasetId
+      ? activePythonVariant?.baseDatasetId ?? activeDatasetId
+      : null;
+
+  const activePythonDatasetDetail =
+    isPythonLikeQuestion && activePythonBaseDatasetId
+      ? pythonDatasetDetails[activePythonBaseDatasetId]
       : undefined;
 
   const activePythonDatasetStatus =
-    isPythonLikeQuestion && activeDatasetId
-      ? pythonDatasetStatus[activeDatasetId]
+    isPythonLikeQuestion && activePythonBaseDatasetId
+      ? pythonDatasetStatus[activePythonBaseDatasetId]
       : undefined;
+
+  const pythonDatasetOptions = useMemo(() => {
+    if (!isPythonLikeQuestion) {
+      return [] as Array<{
+        id: string;
+        label: string;
+        baseDatasetId: string;
+        tableName?: string;
+        tableNames?: string[];
+        originalName?: string;
+      }>;
+    }
+
+    if (duckDbDatasetVariants.length > 0) {
+      const options = duckDbDatasetVariants.map((variant) => {
+        const rawLabel =
+          variant.resolvedTableName ||
+          variant.displayName ||
+          variant.table_name ||
+          variant.name ||
+          "dataset";
+        const label = resolveDatasetLabel(rawLabel);
+        return {
+          id: variant.id,
+          label,
+          baseDatasetId: variant.baseDatasetId,
+          tableName: variant.resolvedTableName ?? variant.table_name,
+          tableNames: variant.resolvedTableName
+            ? [resolveDatasetLabel(variant.resolvedTableName)]
+            : variant.table_name
+            ? [resolveDatasetLabel(variant.table_name)]
+            : undefined,
+          originalName: variant.name,
+        };
+      });
+      return dedupeByLabel(options, (option) => option.label);
+    }
+
+    const options = availablePythonDatasets.map((dataset) => {
+      const detail = pythonDatasetDetails[dataset.id];
+      const rawLabel =
+        detail?.tableNames?.[0] ||
+        detail?.pythonVariable ||
+        detail?.displayName ||
+        detail?.name ||
+        dataset.table_name ||
+        dataset.name ||
+        "dataset";
+      const label = resolveDatasetLabel(rawLabel);
+      return {
+        id: dataset.id,
+        label,
+        baseDatasetId: dataset.id,
+        tableName: detail?.tableNames?.[0] ?? dataset.table_name,
+        tableNames: detail?.tableNames?.length
+          ? detail.tableNames
+          : dataset.table_name
+          ? [resolveDatasetLabel(dataset.table_name)]
+          : undefined,
+        originalName: detail?.originalName ?? dataset.name,
+      };
+    });
+    return dedupeByLabel(options, (option) => option.label);
+  }, [
+    availablePythonDatasets,
+    duckDbDatasetVariants,
+    isPythonLikeQuestion,
+    pythonDatasetDetails,
+  ]);
 
   const datasetLoadSignature = useMemo(
     () =>
       JSON.stringify(
-        availableSqlDatasets.map((dataset) => ({
+        duckDbDatasets.map((dataset) => ({
           id: dataset.id,
           creation: dataset.creation_sql,
           table: dataset.table_name,
           rows: Array.isArray(dataset.data) ? dataset.data.length : 0,
         })),
       ),
-    [availableSqlDatasets],
+    [duckDbDatasets],
   );
 
   useEffect(() => {
@@ -4454,7 +4936,7 @@ export function SubjectLearningInterface({
   }, [selectedQuestionForPopup]);
 
   useEffect(() => {
-    if (!selectedQuestionForPopup || selectedQuestionType !== "sql") {
+    if (!selectedQuestionForPopup || !shouldUseDuckDb) {
       setDuckDbTables([]);
       setDuckDbSetupError(null);
       setIsPreparingDuckDb(false);
@@ -4546,7 +5028,7 @@ export function SubjectLearningInterface({
     const prepareDatasets = async () => {
       // console.log("[DuckDB] Preparing datasets...", {
       //   questionId: selectedQuestionForPopup?.id,
-      //   datasets: availableSqlDatasets.map((dataset) => ({
+      //   datasets: duckDbDatasets.map((dataset) => ({
       //     id: dataset.id,
       //     hasCreationSql: Boolean(dataset.creation_sql),
       //     tableName: dataset.table_name,
@@ -4588,7 +5070,7 @@ export function SubjectLearningInterface({
         let currentTables = await fetchCurrentTables();
         const datasetTableMap: Record<string, string[]> = {};
 
-        for (const dataset of availableSqlDatasets) {
+        for (const dataset of duckDbDatasets) {
           if (cancelled) {
             return;
           }
@@ -4667,13 +5149,14 @@ export function SubjectLearningInterface({
       cancelled = true;
     };
   }, [
-    availableSqlDatasets,
+    duckDbDatasets,
     datasetLoadSignature,
     executeDuckDbQuery,
     loadDuckDbDataset,
     isDuckDbReady,
     selectedQuestionForPopup,
     selectedQuestionType,
+    shouldUseDuckDb,
   ]);
 
   useEffect(() => {
@@ -5955,10 +6438,10 @@ export function SubjectLearningInterface({
     };
 
     const config = languageConfig[questionType] || languageConfig.sql;
-    const sqlDatasetsForQuestion = questionType === "sql" ? sqlDatasetVariants : [];
-    const activeSqlDataset =
-      questionType === "sql" && activeDatasetId
-        ? sqlDatasetsForQuestion.find((dataset) => dataset.id === activeDatasetId) ?? null
+    const duckDbDatasetsForQuestion = shouldUseDuckDb ? duckDbDatasetVariants : [];
+    const activeDuckDbDataset =
+      shouldUseDuckDb && activeDatasetId
+        ? duckDbDatasetsForQuestion.find((dataset) => dataset.id === activeDatasetId) ?? null
         : null;
 
     const formatDatasetTimestamp = (rawValue: unknown) => {
@@ -6154,9 +6637,9 @@ export function SubjectLearningInterface({
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {sqlDatasetsForQuestion.length > 1 && (
+                  {duckDbDatasetsForQuestion.length > 1 && (
                     <div className="flex flex-wrap justify-end gap-2">
-                      {sqlDatasetsForQuestion.map((dataset) => {
+                      {duckDbDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
                         const label = dataset.displayName || dataset.name || dataset.table_name || "Dataset";
                         console.log(dataset);
@@ -6181,22 +6664,22 @@ export function SubjectLearningInterface({
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                     <div className="flex flex-col">
                       <span className="text-sm font-semibold text-slate-800">
-                        {activeSqlDataset?.displayName ||
-                          activeSqlDataset?.name ||
-                          activeSqlDataset?.table_name ||
+                        {activeDuckDbDataset?.displayName ||
+                          activeDuckDbDataset?.name ||
+                          activeDuckDbDataset?.table_name ||
                           "Dataset"}
                       </span>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
-                        {(activeSqlDataset?.resolvedTableName ?? activeSqlDataset?.table_name) && (
+                        {(activeDuckDbDataset?.resolvedTableName ?? activeDuckDbDataset?.table_name) && (
                           <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
-                            Table: {activeSqlDataset.resolvedTableName ?? activeSqlDataset.table_name}
+                            Table: {activeDuckDbDataset.resolvedTableName ?? activeDuckDbDataset.table_name}
                           </span>
                         )}
-                        {activeSqlDataset?.columns?.length ? (
+                        {activeDuckDbDataset?.columns?.length ? (
                           <span className="rounded-full bg-slate-100 px-2.5 py-0.5">
-                            Columns: {activeSqlDataset.columns.slice(0, 6).join(", ")}
-                            {activeSqlDataset.columns.length > 6
-                              ? ` +${activeSqlDataset.columns.length - 6}`
+                            Columns: {activeDuckDbDataset.columns.slice(0, 6).join(", ")}
+                            {activeDuckDbDataset.columns.length > 6
+                              ? ` +${activeDuckDbDataset.columns.length - 6}`
                               : ""}
                           </span>
                         ) : null}
@@ -6208,14 +6691,14 @@ export function SubjectLearningInterface({
                           onClick={() =>
                             downloadDatasetPreview({
                               fileName:
-                                activeSqlDataset?.displayName ||
-                                activeSqlDataset?.name ||
-                                activeSqlDataset?.table_name ||
+                                activeDuckDbDataset?.displayName ||
+                                activeDuckDbDataset?.name ||
+                                activeDuckDbDataset?.table_name ||
                                 "dataset",
                               worksheetName:
-                                activeSqlDataset?.resolvedTableName ||
-                                activeSqlDataset?.table_name ||
-                                activeSqlDataset?.name ||
+                                activeDuckDbDataset?.resolvedTableName ||
+                                activeDuckDbDataset?.table_name ||
+                                activeDuckDbDataset?.name ||
                                 "Dataset",
                             })
                           }
@@ -6285,19 +6768,19 @@ export function SubjectLearningInterface({
                             ? datasetPreviewError
                             : loadingDatasetPreview
                             ? "Preparing dataset preview..."
-                            : sqlDatasetsForQuestion.length === 0
+                            : duckDbDatasetsForQuestion.length === 0
                             ? "No datasets available for this question."
                             : "Preview not available. Try running the dataset creation SQL from the editor."}
                         </p>
                       </div>
                     )}
                   </div>
-                  {activeSqlDataset?.creation_sql && (
+                  {activeDuckDbDataset?.creation_sql && (
                     <div className="border-t border-slate-200 bg-slate-50 px-5 py-3">
                       <button
                         onClick={() => {
-                          if (activeSqlDataset?.creation_sql) {
-                            setSqlCode(activeSqlDataset.creation_sql);
+                          if (activeDuckDbDataset?.creation_sql) {
+                            setSqlCode(activeDuckDbDataset.creation_sql);
                           }
                         }}
                         className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
@@ -6309,28 +6792,29 @@ export function SubjectLearningInterface({
                 </div>
               </div>
             ) : questionType === "python" || questionType === "statistics" ? (
-              availablePythonDatasets.length > 0 ? (
+              pythonDatasetOptions.length > 0 ? (
                 <div className="flex min-h-full flex-col gap-4">
                   <div className="flex items-center justify-between gap-3">
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                       Dataset Preview
                     </h4>
-                    {availablePythonDatasets.length > 1 && (
+                    {pythonDatasetOptions.length > 1 && (
                       <div className="flex flex-wrap justify-end gap-2">
-                        {availablePythonDatasets.map((dataset) => {
-                          const isActive = dataset.id === activeDatasetId;
-                          const detail = pythonDatasetDetails[dataset.id];
-                          const label =
-                            detail?.pythonVariable ||
-                            detail?.displayName ||
-                            detail?.name ||
-                            dataset.table_name ||
-                            dataset.name ||
-                            "Dataset";
+                        {pythonDatasetOptions.map((option) => {
+                          const isActive = option.id === activeDatasetId;
+                          const detail = pythonDatasetDetails[option.baseDatasetId];
+                          const label = option.label;
+                          const tooltip =
+                            detail?.originalName && detail.originalName !== label
+                              ? detail.originalName
+                              : option.originalName && option.originalName !== label
+                              ? option.originalName
+                              : undefined;
                           return (
                             <button
-                              key={dataset.id}
-                              onClick={() => setActiveDatasetId(dataset.id)}
+                              key={option.id}
+                              onClick={() => setActiveDatasetId(option.id)}
+                              title={tooltip}
                               className={`rounded-full px-3 py-1 text-xs font-medium transition ${
                                 isActive
                                   ? "bg-indigo-600 text-white shadow-sm"
@@ -6347,11 +6831,30 @@ export function SubjectLearningInterface({
                   <div className="flex-1 rounded-2xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                       <div className="flex flex-col">
-                        <span className="text-sm font-semibold text-slate-800">
-                          {activePythonDatasetDetail?.displayName ||
-                            availablePythonDatasets.find((dataset) => dataset.id === activeDatasetId)?.name ||
-                            "Dataset"}
+                      <span className="text-sm font-semibold text-slate-800">
+                        {activePythonDatasetDetail?.displayName ||
+                          availablePythonDatasets.find(
+                            (dataset) => dataset.id === activePythonBaseDatasetId,
+                          )?.name ||
+                          pythonDatasetOptions.find((option) => option.id === activeDatasetId)?.label ||
+                          "Dataset"}
                         </span>
+                        {activePythonDatasetDetail?.tableNames?.length ? (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Table
+                            {activePythonDatasetDetail.tableNames.length > 1 ? "s" : ""}:{" "}
+                            <span className="font-mono">
+                              {activePythonDatasetDetail.tableNames.join(", ")}
+                            </span>
+                          </p>
+                        ) : null}
+                        {activePythonDatasetDetail?.originalName &&
+                          activePythonDatasetDetail.originalName !==
+                            (activePythonDatasetDetail.displayName || activePythonDatasetDetail.name) && (
+                            <p className="mt-1 text-xs text-slate-500">
+                              Original label: {activePythonDatasetDetail.originalName}
+                            </p>
+                          )}
                         <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                           {activePythonDatasetDetail?.pythonVariable && (
                             <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-emerald-700">
@@ -6384,20 +6887,28 @@ export function SubjectLearningInterface({
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => {
+                              const selectedOption =
+                                pythonDatasetOptions.find((option) => option.id === activeDatasetId) ??
+                                pythonDatasetOptions[0];
                               const definition =
-                                availablePythonDatasets.find((dataset) => dataset.id === activeDatasetId) ??
-                                availablePythonDatasets[0];
+                                availablePythonDatasets.find(
+                                  (dataset) => dataset.id === selectedOption?.baseDatasetId,
+                                ) ??
+                                availablePythonDatasets[0] ??
+                                null;
                               downloadDatasetPreview({
                                 fileName:
                                   activePythonDatasetDetail?.displayName ||
                                   definition?.name ||
                                   definition?.table_name ||
+                                  selectedOption?.label ||
                                   "dataset",
                                 worksheetName:
                                   activePythonDatasetDetail?.pythonVariable ||
                                   definition?.table_name ||
                                   activePythonDatasetDetail?.displayName ||
                                   definition?.name ||
+                                  selectedOption?.label ||
                                   "Dataset",
                               });
                             }}
@@ -6467,6 +6978,8 @@ export function SubjectLearningInterface({
                               ? datasetPreviewError
                               : loadingDatasetPreview
                               ? "Preparing dataset preview..."
+                              : pythonDatasetOptions.length === 0
+                              ? "No datasets available for this question."
                               : "Dataset preview is not available yet for this Python question."}
                           </p>
                         </div>
@@ -6501,17 +7014,23 @@ export function SubjectLearningInterface({
                     <div className="flex flex-wrap justify-end gap-2">
                       {spreadsheetDatasets.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
+                        const label = dataset.name || "Dataset";
+                        const tooltip =
+                          dataset.originalName && dataset.originalName !== label
+                            ? dataset.originalName
+                            : undefined;
                         return (
                           <button
                             key={dataset.id}
                             onClick={() => setActiveDatasetId(dataset.id)}
+                            title={tooltip}
                             className={`rounded-full px-3 py-1 text-xs font-medium transition ${
                               isActive
                                 ? "bg-indigo-600 text-white shadow-sm"
                                 : "bg-white text-slate-600 ring-1 ring-slate-200 hover:text-indigo-600"
                             }`}
                           >
-                            {dataset.name || "Dataset"}
+                            {label}
                           </button>
                         );
                       })}
@@ -6524,6 +7043,21 @@ export function SubjectLearningInterface({
                       <span className="text-sm font-semibold text-slate-800">
                         {activeSpreadsheetDataset?.name || "Dataset"}
                       </span>
+                      {activeSpreadsheetDataset?.tableNames?.length ? (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Table
+                          {activeSpreadsheetDataset.tableNames.length > 1 ? "s" : ""}:{" "}
+                          <span className="font-mono">
+                            {activeSpreadsheetDataset.tableNames.join(", ")}
+                          </span>
+                        </p>
+                      ) : null}
+                      {activeSpreadsheetDataset?.originalName &&
+                        activeSpreadsheetDataset.originalName !== activeSpreadsheetDataset.name && (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Original label: {activeSpreadsheetDataset.originalName}
+                          </p>
+                        )}
                       {activeSpreadsheetDataset?.description && (
                         <p className="mt-1 text-xs text-slate-500">
                           {activeSpreadsheetDataset.description}
