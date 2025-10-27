@@ -2,8 +2,6 @@
 
 import { supabaseBrowser } from "./supabase-browser";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-
 const supabase = supabaseBrowser();
 
 async function getAuthToken() {
@@ -50,7 +48,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
+  // Use relative path which will be proxied through Vercel to the backend
+  const res = await fetch(path, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

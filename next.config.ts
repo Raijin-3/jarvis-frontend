@@ -3,6 +3,28 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   /* config options here */
   transpilePackages: ['@supabase/supabase-js', '@supabase/ssr'],
+  async rewrites() {
+    // Get the backend URL from environment
+    const backendUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+    
+    // Only return rewrites if backend URL is a full URL (not a relative path)
+    if (backendUrl.startsWith('http://') || backendUrl.startsWith('https://')) {
+      const destination = backendUrl.replace(/\/$/, '');
+      return {
+        // Rewrite all /v1/* requests to the backend
+        beforeFiles: [
+          {
+            source: '/v1/:path*',
+            destination: `${destination}/v1/:path*`,
+          },
+        ],
+      };
+    }
+
+    return {
+      beforeFiles: [],
+    };
+  },
   typescript: {
     // !! WARN !!
     // Dangerously allow production builds to successfully complete even if
