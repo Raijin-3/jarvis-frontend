@@ -4508,6 +4508,20 @@ export function SubjectLearningInterface({
             : typeof questionDataset?.creation_sql === "string"
             ? questionDataset.creation_sql
             : undefined,
+        creation_python: coalesceString(
+          questionDataset?.schema_info?.creation_python,
+          questionDataset?.schema_info?.create_python,
+          questionDataset?.creation_python,
+          questionDataset?.create_python,
+          (questionDataset as Record<string, unknown> | null | undefined)?.data_creation_python,
+        ),
+        create_python: coalesceString(
+          questionDataset?.schema_info?.create_python,
+          questionDataset?.schema_info?.creation_python,
+          questionDataset?.create_python,
+          questionDataset?.creation_python,
+          (questionDataset as Record<string, unknown> | null | undefined)?.data_creation_python,
+        ),
       });
     }
 
@@ -4520,6 +4534,14 @@ export function SubjectLearningInterface({
         inlineDataset.data,
         inlineDataset?.schema_info?.create_sql,
         inlineDataset?.schema_info?.creation_sql,
+      );
+      const inlineCreationPython = coalesceString(
+        inlineDataset.create_python,
+        inlineDataset.creation_python,
+        inlineDataset?.schema_info?.create_python,
+        inlineDataset?.schema_info?.creation_python,
+        inlineDataset?.schema_info?.data_creation_python,
+        inlineDataset?.data_creation_python,
       );
       pushDataset({
         id: `question-inline-python:${selectedQuestionForPopup?.id ?? "inline"}`,
@@ -4541,6 +4563,8 @@ export function SubjectLearningInterface({
         source: "question-inline",
         creation_sql: inlineCreationSource,
         create_sql: inlineCreationSource ?? undefined,
+        creation_python: inlineCreationPython,
+        create_python: inlineCreationPython ?? undefined,
       });
     }
 
@@ -4556,6 +4580,14 @@ export function SubjectLearningInterface({
       ) {
         return;
       }
+      const datasetCreationPython = coalesceString(
+        dataset.create_python,
+        dataset.creation_python,
+        dataset?.schema_info?.create_python,
+        dataset?.schema_info?.creation_python,
+        dataset?.schema_info?.data_creation_python,
+        dataset?.data_creation_python,
+      );
       pushDataset({
         id: `exercise-python:${dataset.id ?? index}`,
         name: dataset.name || `Dataset ${index + 1}`,
@@ -4583,6 +4615,8 @@ export function SubjectLearningInterface({
           dataset?.schema_info?.create_sql,
           dataset?.schema_info?.creation_sql,
         ),
+        creation_python: datasetCreationPython,
+        create_python: datasetCreationPython ?? undefined,
       });
     });
 
@@ -6775,6 +6809,91 @@ export function SubjectLearningInterface({
       ? sanitizeQuestionHTML(resolvedQuestionHtmlSource)
       : "";
 
+    const pythonStarterCode = (() => {
+      if (questionType !== "python") {
+        return undefined;
+      }
+
+      const resolvePythonCreationSource = (candidate: unknown): string | undefined => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+          return undefined;
+        }
+        const record = candidate as Record<string, unknown>;
+        const schemaInfoRaw = record["schema_info"];
+        const schemaInfo =
+          schemaInfoRaw && typeof schemaInfoRaw === "object" && !Array.isArray(schemaInfoRaw)
+            ? (schemaInfoRaw as Record<string, unknown>)
+            : undefined;
+
+        return coalesceString(
+          typeof record["create_python"] === "string" ? (record["create_python"] as string) : undefined,
+          typeof record["creation_python"] === "string" ? (record["creation_python"] as string) : undefined,
+          schemaInfo && typeof schemaInfo["create_python"] === "string"
+            ? (schemaInfo["create_python"] as string)
+            : undefined,
+          schemaInfo && typeof schemaInfo["creation_python"] === "string"
+            ? (schemaInfo["creation_python"] as string)
+            : undefined,
+          schemaInfo && typeof schemaInfo["data_creation_python"] === "string"
+            ? (schemaInfo["data_creation_python"] as string)
+            : undefined,
+          typeof record["data_creation_python"] === "string"
+            ? (record["data_creation_python"] as string)
+            : undefined,
+        );
+      };
+
+      const normalizePythonStarter = (source?: string | undefined) =>
+        source
+          ? normalizeCreationSql(source, {
+              datasetType: "python",
+              preserveFormatting: true,
+            })
+          : undefined;
+
+      const candidateIds = new Set<string>();
+      const candidateDatasets: PythonDatasetDefinition[] = [];
+      const pushCandidate = (dataset?: PythonDatasetDefinition) => {
+        if (!dataset) {
+          return;
+        }
+        const key =
+          typeof dataset.id === "string" && dataset.id.length > 0
+            ? dataset.id
+            : `${dataset.name ?? "dataset"}:${candidateDatasets.length}`;
+        if (candidateIds.has(key)) {
+          return;
+        }
+        candidateIds.add(key);
+        candidateDatasets.push(dataset);
+      };
+
+      const activeDefinition =
+        activePythonBaseDatasetId
+          ? availablePythonDatasets.find((dataset) => dataset.id === activePythonBaseDatasetId)
+          : undefined;
+
+      pushCandidate(activeDefinition);
+      availablePythonDatasets.forEach((dataset) => pushCandidate(dataset));
+
+      for (const dataset of candidateDatasets) {
+        const normalized = normalizePythonStarter(resolvePythonCreationSource(dataset));
+        if (normalized) {
+          return normalized;
+        }
+      }
+
+      const fallbackNormalized = normalizePythonStarter(
+        resolvePythonCreationSource(questionDataset) ??
+          resolvePythonCreationSource(
+            (selectedQuestionForPopup as Record<string, unknown> | null | undefined)?.dataset,
+          ) ??
+          resolvePythonCreationSource(selectedQuestionForPopup),
+      );
+
+      return fallbackNormalized ?? undefined;
+    })();
+
     const languageConfig: Record<string, { name: string; starterCode: string }> = {
       sql: {
         name: "SQL",
@@ -6782,7 +6901,9 @@ export function SubjectLearningInterface({
       },
       python: {
         name: "Python",
-        starterCode: `# Write your Python code here\n# ${question.text || question.question_text}\n\ndef solution():\n    # Your code here\n    pass\n\nsolution()\n`,
+        starterCode:
+          pythonStarterCode ??
+          `# Write your Python code here\n# ${question.text || question.question_text}\n\ndef solution():\n    # Your code here\n    pass\n\nsolution()\n`,
       },
       google_sheets: {
         name: "Google Sheets Formula",
@@ -7614,7 +7735,7 @@ export function SubjectLearningInterface({
                 </div>
                 <div className="mt-4 flex min-h-[280px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
                   <textarea
-                    value={sqlCode}
+                    value={selectedQuestionType=== 'python' ? config.starterCode: sqlCode}
                     onChange={(e) => setSqlCode(e.target.value)}
                     className={`flex-1 resize-none bg-transparent p-5 font-mono text-sm leading-6 tracking-tight text-slate-100 outline-none ${
                       questionType === "sql" ? "placeholder:text-slate-500" : "placeholder:text-slate-400"
