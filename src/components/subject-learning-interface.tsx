@@ -1,18 +1,5 @@
 "use client";
-import {
-  getQuizAction,
-  generateSectionExercisesAction,
-  generateSectionQuizAction,
-  getSectionExercisesAction,
-  getSectionQuizzesAction,
-  getExerciseDatasetsAction,
-  startAdaptiveQuizAction,
-  resumeAdaptiveQuizAction,
-  checkAdaptiveQuizStatusAction,
-  getNextQuestionAction,
-  getAdaptiveQuizSummaryAction,
-  getExerciseProgressAction,
-} from "@/lib/actions";
+import { apiGet, apiPost } from "@/lib/api-client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { VideoPlayer } from "@/components/video-player";
@@ -228,6 +215,106 @@ const resourceLabels: Record<ResourceKind, string> = {
   exercise: "Practice Exercise",
   quiz: "Section Quiz",
 };
+
+type GenerateSectionExercisesPayload = {
+  sectionId: string;
+  courseId: string;
+  subjectId: string;
+  sectionTitle: string;
+  difficulty?: "Beginner" | "Intermediate" | "Advanced";
+  exerciseType?: "sql" | "python" | "google_sheets" | "statistics" | "reasoning" | "math" | "geometry";
+  questionCount?: number;
+  userId?: string;
+};
+
+type GenerateSectionQuizPayload = {
+  sectionId: string;
+  courseId: string;
+  subjectId: string;
+  sectionTitle: string;
+  difficulty?: "Beginner" | "Intermediate" | "Advanced";
+  questionCount?: number;
+  questionTypes?: string[];
+  prevQuizResult?: {
+    score: number;
+    answers: Record<string, any>;
+    feedback?: string;
+    stop?: boolean;
+  };
+};
+
+type AdaptiveQuizStartPayload = {
+  courseId: string;
+  subjectId: string;
+  sectionId: string;
+  sectionTitle: string;
+  difficulty?: "Beginner" | "Intermediate" | "Advanced";
+  targetLength?: number;
+};
+
+type AdaptiveQuizResumePayload = {
+  sectionId?: string;
+};
+
+type AdaptiveQuizNextQuestionPayload = {
+  sessionId: string;
+  previousAnswer?: {
+    questionId: string;
+    selectedOption: string;
+    isCorrect: boolean;
+  };
+};
+
+const getQuizAction = (quizId: string) => apiGet<Quiz>(`/v1/quizzes/${quizId}`);
+
+const generateSectionExercisesAction = (payload: GenerateSectionExercisesPayload) =>
+  apiPost<GeneratedExerciseResponse>(`/v1/sections/${payload.sectionId}/generate-exercises`, {
+    courseId: payload.courseId,
+    subjectId: payload.subjectId,
+    sectionTitle: payload.sectionTitle,
+    difficulty: payload.difficulty,
+    exerciseType: payload.exerciseType,
+    questionCount: payload.questionCount,
+    userId: payload.userId,
+  });
+
+const generateSectionQuizAction = (payload: GenerateSectionQuizPayload) =>
+  apiPost(`/v1/sections/${payload.sectionId}/generate-quiz`, {
+    courseId: payload.courseId,
+    subjectId: payload.subjectId,
+    sectionTitle: payload.sectionTitle,
+    difficulty: payload.difficulty,
+    questionCount: payload.questionCount,
+    questionTypes: payload.questionTypes,
+    ...(payload.prevQuizResult ? { prevQuizResult: payload.prevQuizResult } : {}),
+  });
+
+const getSectionExercisesAction = (sectionId: string) =>
+  apiGet(`/v1/sections/${sectionId}/exercises`);
+
+const getSectionQuizzesAction = (sectionId: string) =>
+  apiGet(`/v1/sections/${sectionId}/quizzes`);
+
+const getExerciseDatasetsAction = (exerciseId: string) =>
+  apiGet(`/v1/practice-exercises/${exerciseId}/datasets`);
+
+const startAdaptiveQuizAction = (payload: AdaptiveQuizStartPayload) =>
+  apiPost(`/v1/adaptive-quiz/start`, payload);
+
+const resumeAdaptiveQuizAction = (payload: AdaptiveQuizResumePayload = {}) =>
+  apiPost(`/v1/adaptive-quiz/resume`, payload);
+
+const checkAdaptiveQuizStatusAction = (sectionId: string) =>
+  apiPost(`/v1/adaptive-quiz/check-status`, { sectionId });
+
+const getNextQuestionAction = (payload: AdaptiveQuizNextQuestionPayload) =>
+  apiPost(`/v1/adaptive-quiz/next-question`, payload);
+
+const getAdaptiveQuizSummaryAction = (sessionId: string) =>
+  apiPost(`/v1/adaptive-quiz/summary`, { sessionId });
+
+const getExerciseProgressAction = (exerciseId: string) =>
+  apiGet(`/v1/sections/exercises/${exerciseId}/progress`);
 
 const getExerciseQuestionKey = (question: any, fallbackIndex: number): string => {
   const normalizedIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
@@ -2172,18 +2259,14 @@ export function SubjectLearningInterface({
   const [pendingAdaptiveQuestion, setPendingAdaptiveQuestion] = useState<any>(null);
 
   // Authentication state
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   
-  // Get session token and userId from Supabase
+  // Get userId from Supabase
   useEffect(() => {
     const getSession = async () => {
       try {
         const supabase = supabaseBrowser();
         const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) {
-          setSessionToken(session.access_token);
-        }
         if (session?.user?.id) {
           setUserId(session.user.id);
         }
@@ -2488,58 +2571,37 @@ export function SubjectLearningInterface({
 
       setLoadingDataset(true);
       try {
-        const response = await fetch(`/api/v1/sections/questions/${questionId}/dataset`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+        const result = await apiGet<{ data?: QuestionDatasetRecord | null } | QuestionDatasetRecord | null>(
+          `/v1/sections/questions/${questionId}/dataset`,
+        );
+        const datasetPayload =
+          result && typeof result === "object" && "data" in result ? (result as { data?: QuestionDatasetRecord | null }).data : (result as QuestionDatasetRecord | null);
+        const normalizedDataset = normalizeQuestionDataset(datasetPayload, {
+          questionId,
+          questionTitle: context?.questionTitle,
+          subjectType: context?.questionType,
         });
-
-        if (response.status === 404) {
-          setQuestionDataset(null);
-          setQuestionDatasetCache((prev) => ({
-            ...prev,
-            [questionId]: null,
-          }));
-          return;
-        }
-
-        if (response.ok) {
-          const result = await response.json();
-          const normalizedDataset = normalizeQuestionDataset(result?.data, {
-            questionId,
-            questionTitle: context?.questionTitle,
-            subjectType: context?.questionType,
-          });
-          setQuestionDataset(normalizedDataset);
-          setQuestionDatasetCache((prev) => ({
-            ...prev,
-            [questionId]: normalizedDataset,
-          }));
-        } else {
-          let errorDetails = "";
-          try {
-            errorDetails = (await response.text())?.trim();
-          } catch (readError) {
-            console.warn('Failed to read dataset error response:', readError);
-          }
-          console.warn(
-            `Failed to fetch dataset for question ${questionId}: ${response.status} ${response.statusText}`,
-            errorDetails,
-          );
-          setQuestionDataset(null);
-          setQuestionDatasetCache((prev) => ({
-            ...prev,
-            [questionId]: null,
-          }));
-        }
-      } catch (error) {
-        console.error('Error fetching dataset:', error);
-        setQuestionDataset(null);
+        setQuestionDataset(normalizedDataset);
         setQuestionDatasetCache((prev) => ({
           ...prev,
-          [questionId]: null,
+          [questionId]: normalizedDataset,
         }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message.includes(" 404")) {
+          setQuestionDataset(null);
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: null,
+          }));
+        } else {
+          console.error("Error fetching dataset:", error);
+          setQuestionDataset(null);
+          setQuestionDatasetCache((prev) => ({
+            ...prev,
+            [questionId]: null,
+          }));
+        }
       } finally {
         setLoadingDataset(false);
       }
@@ -3089,50 +3151,44 @@ export function SubjectLearningInterface({
   }, [selectedSection]);
 
   const handlePracticeSubmit = useCallback(async (questionId: string, solution: string) => {
-    try {
-      if (!sessionToken) {
-        console.error('No session token available');
-        return {
-          success: false,
-          feedback: "Authentication required. Please refresh the page."
-        };
-      }
+    if (!userId) {
+      return {
+        success: false,
+        feedback: "Authentication required. Please refresh the page.",
+      };
+    }
 
-      const response = await fetch('/api/v1/practice-exercises/attempt', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(sessionToken && {'Authorization': `Bearer ${sessionToken}`}),
-        },
-        body: JSON.stringify({
+    try {
+      const result = await apiPost<{ is_correct?: boolean; feedback?: string; success?: boolean }>(
+        "/v1/practice-exercises/attempt",
+        {
           question_id: questionId,
           submitted_answer: solution,
           attempted_at: new Date().toISOString(),
-        }),
-      });
+        },
+      );
 
-      if (response.ok) {
-        const result = await response.json();
-        return {
-          success: true,
-          isCorrect: result.is_correct,
-          feedback: result.feedback || "Solution submitted successfully!"
-        };
-      } else {
-        console.error('Failed to submit practice attempt:', response.statusText);
+      const isCorrect = typeof result?.is_correct === "boolean" ? result.is_correct : Boolean(result?.success);
+      return {
+        success: true,
+        isCorrect,
+        feedback: result?.feedback || "Solution submitted successfully!",
+      };
+    } catch (error) {
+      console.error("Error submitting practice attempt:", error);
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("401")) {
         return {
           success: false,
-          feedback: "Failed to submit solution. Please try again."
+          feedback: "Authentication required. Please refresh the page.",
         };
       }
-    } catch (error) {
-      console.error('Error submitting practice attempt:', error);
       return {
         success: false,
-        feedback: "Network error. Please check your connection and try again."
+        feedback: "Failed to submit solution. Please try again.",
       };
     }
-  }, [sessionToken]);
+  }, [userId]);
 
   const registerSectionRef = useCallback(
 

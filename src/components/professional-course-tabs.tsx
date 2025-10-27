@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { BookOpen, Code, HelpCircle, MessageCircle, User, Send, CheckSquare, FileText, Play } from "lucide-react";
+import { apiGet, apiPost } from "@/lib/api-client";
 
 type Comment = {
   id: string;
@@ -42,24 +43,20 @@ export function ProfessionalCourseTabs({
     
     setLoadingExercises(true);
     try {
-      const response = await fetch(`/api/v1/sections/${sectionId}/generate-exercises`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          courseId,
-          subjectId,
-          sectionTitle,
-          difficulty: 'Intermediate',
-          exerciseCount: 3,
-          exerciseTypes: ['sql', 'python']
-        }),
+      const result = await apiPost<any>(`/v1/sections/${sectionId}/generate-exercises`, {
+        courseId,
+        subjectId,
+        sectionTitle,
+        difficulty: 'Intermediate',
+        exerciseCount: 3,
+        exerciseTypes: ['sql', 'python'],
       });
-      
-      if (response.ok) {
-        const exercises = await response.json();
-        setPracticeExercises(exercises);
+      if (Array.isArray(result)) {
+        setPracticeExercises(result);
+      } else if (Array.isArray(result?.exercises)) {
+        setPracticeExercises(result.exercises);
+      } else {
+        setPracticeExercises([]);
       }
     } catch (error) {
       console.error('Error generating exercises:', error);
@@ -74,28 +71,14 @@ export function ProfessionalCourseTabs({
     setLoadingQuizzes(true);
     try {
       // console.log('Generating quiz for section:', sectionId);
-      const response = await fetch(`/api/v1/sections/${sectionId}/generate-quiz`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          courseId,
-          subjectId,
-          sectionTitle,
-          difficulty: 'Intermediate',
-          questionCount: 5,
-          questionTypes: ['multiple_choice', 'true_false']
-        }),
+      const result = await apiPost<any>(`/v1/sections/${sectionId}/generate-quiz`, {
+        courseId,
+        subjectId,
+        sectionTitle,
+        difficulty: 'Intermediate',
+        questionCount: 5,
+        questionTypes: ['multiple_choice', 'true_false'],
       });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Quiz generation failed:', response.status, errorText);
-        throw new Error(`Failed to generate quiz: ${response.status}`);
-      }
-      
-      const result = await response.json();
       // console.log('Quiz generation response:', result);
       
       // The response should contain quiz data
@@ -104,20 +87,12 @@ export function ProfessionalCourseTabs({
       if (quiz && quiz.id) {
         // Fetch the full quiz with questions and options
         // console.log('Fetching full quiz data for quiz ID:', quiz.id);
-        const quizResponse = await fetch(`/api/v1/quizzes/${quiz.id}`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-        
-        if (quizResponse.ok) {
-          const fullQuiz = await quizResponse.json();
-          // console.log('Full quiz data loaded:', fullQuiz);
+        try {
+          const fullQuiz = await apiGet<any>(`/v1/quizzes/${quiz.id}`);
           setQuizzes([fullQuiz]);
-        } else {
+        } catch (quizFetchError) {
           // If fetching full quiz fails, use the generated quiz data
-          console.warn('Could not fetch full quiz, using generated data');
+          console.warn('Could not fetch full quiz, using generated data', quizFetchError);
           setQuizzes([quiz]);
         }
       } else {
@@ -136,10 +111,13 @@ export function ProfessionalCourseTabs({
     if (!sectionId) return;
     
     try {
-      const response = await fetch(`/api/v1/sections/${sectionId}/exercises`);
-      if (response.ok) {
-        const exercises = await response.json();
+      const exercises = await apiGet<any>(`/v1/sections/${sectionId}/exercises`);
+      if (Array.isArray(exercises)) {
         setPracticeExercises(exercises);
+      } else if (Array.isArray(exercises?.data)) {
+        setPracticeExercises(exercises.data);
+      } else {
+        setPracticeExercises([]);
       }
     } catch (error) {
       console.error('Error loading exercises:', error);
@@ -150,10 +128,13 @@ export function ProfessionalCourseTabs({
     if (!sectionId) return;
     
     try {
-      const response = await fetch(`/api/v1/sections/${sectionId}/quizzes`);
-      if (response.ok) {
-        const quizzes = await response.json();
-        setQuizzes(quizzes);
+      const quizzesResponse = await apiGet<any>(`/v1/sections/${sectionId}/quizzes`);
+      if (Array.isArray(quizzesResponse)) {
+        setQuizzes(quizzesResponse);
+      } else if (Array.isArray(quizzesResponse?.data)) {
+        setQuizzes(quizzesResponse.data);
+      } else {
+        setQuizzes([]);
       }
     } catch (error) {
       console.error('Error loading quizzes:', error);
