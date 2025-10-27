@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "node scripts/prepare-next-dev.js && next dev --turbopack --port 3003",
     "dev:webpack": "node scripts/prepare-next-dev.js && next dev --port 3003",
-    "build": "next build --turbopack",
+    "build": "next build",
     "build:webpack": "next build",
+    "build:turbopack": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
     "test": "playwright test",
