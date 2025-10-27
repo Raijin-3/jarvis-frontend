@@ -4,26 +4,19 @@ const nextConfig: NextConfig = {
   /* config options here */
   transpilePackages: ['@supabase/supabase-js', '@supabase/ssr'],
   async rewrites() {
-    // Get the backend URL from environment
-    const backendUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
-    
-    // Only return rewrites if backend URL is a full URL (not a relative path)
-    if (backendUrl.startsWith('http://') || backendUrl.startsWith('https://')) {
-      const destination = backendUrl.replace(/\/$/, '');
-      return {
-        // Rewrite all /v1/* requests to the backend
-        beforeFiles: [
-          {
-            source: '/v1/:path*',
-            destination: `${destination}/v1/:path*`,
-          },
-        ],
-      };
+    const target = process.env.API_URL;
+    if (!target || target.startsWith('/')) {
+      return [];
     }
 
-    return {
-      beforeFiles: [],
-    };
+    const destination = target.replace(/\/$/, '');
+
+    return [
+      {
+        source: '/api/proxy/:path*',
+        destination: `${destination}/:path*`,
+      },
+    ];
   },
   typescript: {
     // !! WARN !!
