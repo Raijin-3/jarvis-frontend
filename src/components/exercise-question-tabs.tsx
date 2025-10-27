@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Check, Circle, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { CodeExecutor } from './code-executor';
 
@@ -53,6 +53,7 @@ export function ExerciseQuestionTabs({
   const [submissionResult, setSubmissionResult] = useState<any>(null);
   const [datasetLoaded, setDatasetLoaded] = useState(false);
   const [loadingDataset, setLoadingDataset] = useState(false);
+  const [hasDatasetLoadedOnce, setHasDatasetLoadedOnce] = useState(false);
   const [startTime, setStartTime] = useState<number>(Date.now());
 
   // Sort questions by order_index
@@ -67,12 +68,25 @@ export function ExerciseQuestionTabs({
     | 'math'
     | 'geometry';
 
-  // Load dataset on mount
+  const datasetInitializedRef = useRef(false);
+
+  // Load dataset on mount (only once per exercise)
   useEffect(() => {
-    if (dataCreationSql && !datasetLoaded && !loadingDataset) {
-      loadDataset();
+    if (!dataCreationSql || datasetInitializedRef.current) {
+      return;
     }
-  }, [dataCreationSql, datasetLoaded, loadingDataset]);
+
+    datasetInitializedRef.current = true;
+    loadDataset();
+  }, [dataCreationSql]);
+
+  // Reset dataset state when exercise changes
+  useEffect(() => {
+    datasetInitializedRef.current = false;
+    setDatasetLoaded(false);
+    setLoadingDataset(false);
+    setHasDatasetLoadedOnce(false);
+  }, [exerciseId]);
 
   // Reset start time when question changes
   useEffect(() => {
@@ -81,12 +95,16 @@ export function ExerciseQuestionTabs({
   }, [activeQuestionIndex]);
 
   const loadDataset = async () => {
-    if (!dataCreationSql) return;
-    
+    if (!dataCreationSql) {
+      console.warn('ExerciseQuestionTabs: No dataCreationSql provided; dataset load skipped.');
+      return;
+    }
+
     setLoadingDataset(true);
     try {
       await onLoadDataset(dataCreationSql);
       setDatasetLoaded(true);
+      setHasDatasetLoadedOnce(true);
       console.log('✅ Dataset loaded successfully');
     } catch (error) {
       console.error('❌ Failed to load dataset:', error);
@@ -94,6 +112,12 @@ export function ExerciseQuestionTabs({
       setLoadingDataset(false);
     }
   };
+
+  useEffect(() => {
+    if (datasetLoaded) {
+      setHasDatasetLoadedOnce(true);
+    }
+  }, [datasetLoaded]);
 
   const handleAnswerChange = (answer: string) => {
     setUserAnswers(prev => ({
@@ -189,7 +213,7 @@ export function ExerciseQuestionTabs({
                 Loading dataset...
               </span>
             )}
-            {datasetLoaded && (
+            {!loadingDataset && hasDatasetLoadedOnce && (
               <span className="flex items-center text-sm text-green-600">
                 <CheckCircle2 className="w-4 h-4 mr-2" />
                 Dataset loaded

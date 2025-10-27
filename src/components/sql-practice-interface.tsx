@@ -669,7 +669,7 @@ export function SqlPracticeInterface({
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {result.values.slice(0, 20).map((row, i) => (
+                                  {result.values.map((row, i) => (
                                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                                       {row.map((cell, j) => (
                                         <td key={j} className="border px-4 py-2">
