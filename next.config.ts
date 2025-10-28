@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
 
     return [
       {
+        source: '/v1/:path*',
+        destination: `${destination}/v1/:path*`,
+      },
+      {
         source: '/api/proxy/:path*',
         destination: `${destination}/:path*`,
       },
