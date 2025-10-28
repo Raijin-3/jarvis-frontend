@@ -135,8 +135,11 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
   const apiCall = useCallback(async (endpoint: string, options: RequestInit = {}) => {
     try {
       const headers = await getAuthHeaders();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
-      const fullUrl = `${apiUrl}${endpoint}`;
+      const basePath = process.env.NODE_ENV === 'production' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080');
+      const normalizedBasePath = basePath.replace(/\/$/, '');
+      const fullUrl = endpoint.startsWith('http://') || endpoint.startsWith('https://')
+        ? endpoint
+        : `${normalizedBasePath}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
       
       console.debug('[Gamification] Fetching:', fullUrl);
       

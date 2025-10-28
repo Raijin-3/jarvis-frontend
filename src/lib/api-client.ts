@@ -2,9 +2,24 @@
 
 import { supabaseBrowser } from "./supabase-browser";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const devApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const isProduction = process.env.NODE_ENV === "production";
+const devBaseUrl = devApiUrl.replace(/\/$/, "");
 
 const supabase = supabaseBrowser();
+
+function buildRequestUrl(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  if (isProduction) {
+    return normalizedPath;
+  }
+
+  return `${devBaseUrl}${normalizedPath}`;
+}
 
 async function getAuthToken() {
   const { data, error } = await supabase.auth.getSession();
@@ -50,7 +65,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const url = buildRequestUrl(path);
+  const res = await fetch(url, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

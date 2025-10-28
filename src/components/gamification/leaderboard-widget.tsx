@@ -47,17 +47,18 @@ export function LeaderboardWidget({ compact = false }: LeaderboardWidgetProps) {
         'Content-Type': 'application/json',
       };
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+      const basePath = process.env.NODE_ENV === 'production' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080');
+      const normalizedBasePath = basePath.replace(/\/$/, '');
 
       // Fetch overall points leaderboard
       const overallResponse = await fetch(
-        `${apiUrl}/v1/gamification/leaderboard/overall_points?limit=10`,
+        `${normalizedBasePath}/v1/gamification/leaderboard/overall_points?limit=10`,
         { headers }
       );
       
       // Fetch monthly points leaderboard
       const monthlyResponse = await fetch(
-        `${apiUrl}/v1/gamification/leaderboard/monthly_points?limit=10`,
+        `${normalizedBasePath}/v1/gamification/leaderboard/monthly_points?limit=10`,
         { headers }
       );
 

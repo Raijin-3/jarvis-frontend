@@ -84,19 +84,21 @@ export function LoginForm() {
       try {
         const { data: { session } } = await sb.auth.getSession()
         const token = session?.access_token
-        if (token && process.env.NEXT_PUBLIC_API_URL) {
-          const apiUrl = `${process.env.NEXT_PUBLIC_API_URL}/v1/profile`
+        if (token) {
+          const basePath = process.env.NODE_ENV === 'production' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
+          const normalizedBasePath = basePath.replace(/\/$/, '')
+          const profileUrl = `${normalizedBasePath}/v1/profile`
           // If Admin selected, attempt to set role before fetching
           if (roleTab === 'admin') {
             try {
-              await fetch(apiUrl, {
+              await fetch(profileUrl, {
                 method: 'PUT',
                 headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ role: 'admin' })
               })
             } catch {}
           }
-          const r = await fetch(apiUrl, { headers: { Authorization: `Bearer ${token}` } })
+          const r = await fetch(profileUrl, { headers: { Authorization: `Bearer ${token}` } })
           if (r.ok) {
             const profile = await r.json()
             const role = String(profile?.role || '').toLowerCase()
