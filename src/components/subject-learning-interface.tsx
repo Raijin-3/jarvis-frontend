@@ -7229,12 +7229,12 @@ export function SubjectLearningInterface({
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {duckDbDatasetsForQuestion.length > 1 && (
+                  {duckDbDatasetsForQuestion.length > 0 && (
                     <div className="flex flex-wrap justify-end gap-2">
                       {duckDbDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
-                        const label = dataset.displayName || dataset.name || dataset.table_name || "Dataset";
-                        console.log(dataset);
+                        const label = dataset.table_name || "Dataset";
+                        
                         return (
                           <button
                             key={dataset.id}
@@ -7256,10 +7256,7 @@ export function SubjectLearningInterface({
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                     <div className="flex flex-col">
                       <span className="text-sm font-semibold text-slate-800">
-                        {activeDuckDbDataset?.displayName ||
-                          activeDuckDbDataset?.name ||
-                          activeDuckDbDataset?.table_name ||
-                          "Dataset"}
+                        {activeDuckDbDataset?.table_name || "Dataset"}
                       </span>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                         {(activeDuckDbDataset?.resolvedTableName ?? activeDuckDbDataset?.table_name) && (
@@ -7390,7 +7387,7 @@ export function SubjectLearningInterface({
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                       Dataset Preview
                     </h4>
-                    {pythonDatasetOptions.length > 1 && (
+                    {pythonDatasetOptions.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2">
                         {pythonDatasetOptions.map((option) => {
                           const isActive = option.id === activeDatasetId;
