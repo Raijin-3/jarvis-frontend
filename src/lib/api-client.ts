@@ -5,6 +5,7 @@ import { supabaseBrowser } from "./supabase-browser";
 const devApiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const isProduction = process.env.NODE_ENV === "production";
 const devBaseUrl = devApiUrl.replace(/\/$/, "");
+const shouldProxyBackendCalls = isProduction && devBaseUrl.startsWith("http://");
 
 const supabase = supabaseBrowser();
 
@@ -27,8 +28,11 @@ function buildRequestUrl(path: string): string {
     return `${frontendUrl.replace(/\/$/, '')}${normalizedPath}`;
   }
   
-  // For backend routes (starts with /v1/), always use the backend URL
+  // For backend routes (starts with /v1/), go through server proxy in production if backend lacks HTTPS
   if (normalizedPath.startsWith("/v1/")) {
+    if (shouldProxyBackendCalls) {
+      return `/api/proxy${normalizedPath}`;
+    }
     return `${devBaseUrl}${normalizedPath}`;
   }
   
