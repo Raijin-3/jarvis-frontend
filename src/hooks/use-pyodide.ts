@@ -43,6 +43,14 @@ export function usePyodide() {
         setIsLoading(true);
         setError(null);
 
+        // Set a timeout for initialization (60 seconds - Pyodide is heavy)
+        const timeoutId = setTimeout(() => {
+          if (mounted) {
+            setError('Pyodide initialization timed out (60s). Your internet connection might be slow or CDN is unavailable.');
+            setIsLoading(false);
+          }
+        }, 60000);
+
         // Load Pyodide from CDN
         if (!window.loadPyodide) {
           const script = document.createElement('script');
@@ -51,12 +59,15 @@ export function usePyodide() {
           
           await new Promise<void>((resolve, reject) => {
             script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load Pyodide script'));
+            script.onerror = () => reject(new Error('Failed to load Pyodide script from CDN'));
             document.head.appendChild(script);
           });
         }
 
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(timeoutId);
+          return;
+        }
 
         const loadPyodide = window.loadPyodide;
         if (!loadPyodide) {
@@ -67,20 +78,30 @@ export function usePyodide() {
           indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
         });
 
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(timeoutId);
+          return;
+        }
 
         // Load commonly used packages
         await pyodide.loadPackage(['numpy', 'pandas']);
 
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(timeoutId);
+          return;
+        }
 
+        clearTimeout(timeoutId);
         pyodideRef.current = pyodide;
         setIsReady(true);
         setIsLoading(false);
       } catch (err) {
         console.error('Failed to initialize Pyodide:', err);
         if (mounted) {
-          setError(err instanceof Error ? err.message : 'Failed to initialize Pyodide');
+          const errorMessage = err instanceof Error 
+            ? err.message 
+            : 'Failed to initialize Pyodide. Please check your internet connection and try again.';
+          setError(errorMessage);
           setIsLoading(false);
         }
       }

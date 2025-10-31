@@ -49,7 +49,7 @@ export function ProfessionalCourseTabs({
     
     setLoadingExercises(true);
     try {
-      const result = await apiPost<any>(`/v1/sections/${sectionId}/generate-exercises`, {
+      const result = await apiPost<any>(`/api/v1/sections/${sectionId}/generate-exercises`, {
         courseId,
         subjectId,
         sectionTitle,
@@ -81,7 +81,7 @@ export function ProfessionalCourseTabs({
     setLoadingQuizzes(true);
     try {
       // console.log('Generating quiz for section:', sectionId);
-      const result = await apiPost<any>(`/v1/sections/${sectionId}/generate-quiz`, {
+      const result = await apiPost<any>(`/api/v1/sections/${sectionId}/generate-quiz`, {
         courseId,
         subjectId,
         sectionTitle,
@@ -98,7 +98,7 @@ export function ProfessionalCourseTabs({
         // Fetch the full quiz with questions and options
         // console.log('Fetching full quiz data for quiz ID:', quiz.id);
         try {
-          const fullQuiz = await apiGet<any>(`/v1/quizzes/${quiz.id}`);
+          const fullQuiz = await apiGet<any>(`/api/v1/quizzes/${quiz.id}`);
           setQuizzes([fullQuiz]);
         } catch (quizFetchError) {
           // If fetching full quiz fails, use the generated quiz data
@@ -122,7 +122,7 @@ export function ProfessionalCourseTabs({
     if (!canAccessApi) return;
     
     try {
-      const exercises = await apiGet<any>(`/v1/sections/${sectionId}/exercises`);
+      const exercises = await apiGet<any>(`/api/v1/sections/${sectionId}/exercises`);
       if (Array.isArray(exercises)) {
         setPracticeExercises(exercises);
       } else if (Array.isArray(exercises?.data)) {
@@ -140,7 +140,7 @@ export function ProfessionalCourseTabs({
     if (!canAccessApi) return;
     
     try {
-      const quizzesResponse = await apiGet<any>(`/v1/sections/${sectionId}/quizzes`);
+      const quizzesResponse = await apiGet<any>(`/api/v1/sections/${sectionId}/quizzes`);
       if (Array.isArray(quizzesResponse)) {
         setQuizzes(quizzesResponse);
       } else if (Array.isArray(quizzesResponse?.data)) {

@@ -10,7 +10,7 @@ export default async function AssessmentManagementPage() {
   const { data: { user } } = await sb.auth.getUser()
   if (!user) redirect("/login")
 
-  const profile = await apiGet<any>("/v1/profile").catch(() => null)
+  const profile = await apiGet<any>("/api/v1/profile").catch(() => null)
   if ((profile?.role ?? "").toLowerCase() !== "admin") redirect("/dashboard")
 
   return <EnhancedAssessmentManagement />

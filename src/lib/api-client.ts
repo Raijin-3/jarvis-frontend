@@ -14,6 +14,25 @@ function buildRequestUrl(path: string): string {
   }
 
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  
+  // If the path is to the frontend's API routes (starts with /api/), 
+  // use a local path as it will be served by this Next.js app
+  if (normalizedPath.startsWith("/api/")) {
+    // In production, it's just a relative path served locally
+    // In dev, we need the full URL to the frontend
+    if (isProduction) {
+      return normalizedPath;
+    }
+    const frontendUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3003";
+    return `${frontendUrl.replace(/\/$/, '')}${normalizedPath}`;
+  }
+  
+  // For backend routes (starts with /v1/), always use the backend URL
+  if (normalizedPath.startsWith("/v1/")) {
+    return `${devBaseUrl}${normalizedPath}`;
+  }
+  
+  // Fallback for other paths
   if (isProduction) {
     return normalizedPath;
   }
@@ -66,6 +85,14 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
 
   const url = buildRequestUrl(path);
+  
+  // Validate URL - must be absolute for fetch in dev, can be relative in production
+  if (!isProduction && !url.startsWith("http://") && !url.startsWith("https://")) {
+    const errorMsg = `Invalid URL built from path "${path}": "${url}". API URL: "${devApiUrl}", isProduction: ${isProduction}`;
+    console.error(errorMsg);
+    throw new Error(errorMsg);
+  }
+  
   const res = await fetch(url, {
     method,
     headers,

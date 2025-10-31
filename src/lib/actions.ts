@@ -12,7 +12,7 @@ export async function generateSectionExercisesAction(sectionData: {
   subjectId: string;
   sectionTitle: string;
   difficulty?: 'Beginner' | 'Intermediate' | 'Advanced';
-  exerciseType?: 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry';
+  exerciseType?: 'sql' | 'python' | 'google_sheets' | 'statistics' | 'reasoning' | 'math' | 'geometry' | 'power_bi';
   questionCount?: number;
   userId?: string;
 }) {

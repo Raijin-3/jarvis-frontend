@@ -14,7 +14,9 @@ import {
   Database,
   Code,
   FileSpreadsheet,
-  Loader2
+  Loader2,
+  AlertCircle,
+  Loader
 } from "lucide-react";
 
 type TestCase = {
@@ -202,6 +204,7 @@ export function PythonPracticeInterface({
   const [activeTab, setActiveTab] = useState<'problem' | 'editor' | 'results' | 'datasets'>('editor');
   const [stdout, setStdout] = useState<string>('');
   const [datasetsLoaded, setDatasetsLoaded] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
@@ -215,6 +218,11 @@ export function PythonPracticeInterface({
     loadDataFrame,
     reset: resetPyodide
   } = usePyodide();
+
+  // Retry initialization
+  const handleRetry = useCallback(() => {
+    setRetryCount(prev => prev + 1);
+  }, []);
 
   // Load test cases for the question
   useEffect(() => {
@@ -666,6 +674,48 @@ ${userCode}
 
   return (
     <div className="h-full flex flex-col bg-gray-50 rounded-lg overflow-hidden">
+      {/* Loading/Error Banner */}
+      {(pyodideLoading || pyodideError) && (
+        <div className={`px-4 py-3 border-b ${pyodideError ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
+          <div className="flex items-center gap-3">
+            {pyodideLoading ? (
+              <>
+                <Loader className="h-4 w-4 text-blue-600 animate-spin" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-blue-900">Initializing Python Runtime...</p>
+                  <p className="text-xs text-blue-700 mt-1">Loading Pyodide (Python via WebAssembly) and required packages (numpy, pandas)</p>
+                </div>
+              </>
+            ) : pyodideError ? (
+              <>
+                <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-red-900">Python Runtime Initialization Failed</p>
+                  <p className="text-xs text-red-700 mt-1">{pyodideError}</p>
+                  <p className="text-xs text-red-600 mt-2">
+                    This might be due to network issues or browser compatibility. Please try again.
+                  </p>
+                </div>
+                <div className="flex gap-2 flex-shrink-0">
+                  <button
+                    onClick={handleRetry}
+                    className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                  >
+                    Reload
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3">
         <div className="flex items-center justify-between">
@@ -677,23 +727,26 @@ ${userCode}
           <div className="flex items-center gap-3">
             {/* Pyodide Status */}
             <div className="flex items-center gap-2 text-sm">
-              {pyodideLoading && (
-                <span className="flex items-center gap-1 text-blue-600">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading Python...
-                </span>
-              )}
-              {pyodideReady && (
-                <span className="flex items-center gap-1 text-green-600">
-                  <CheckCircle className="h-4 w-4" />
-                  Python Ready
-                </span>
-              )}
-              {pyodideError && (
-                <span className="flex items-center gap-1 text-red-600">
-                  <XCircle className="h-4 w-4" />
-                  Python Error
-                </span>
+              {pyodideLoading ? (
+                <>
+                  <Loader className="h-4 w-4 text-blue-600 animate-spin" />
+                  <span className="text-blue-600 font-medium">Loading Python...</span>
+                </>
+              ) : pyodideReady ? (
+                <>
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <span className="text-green-600 font-medium">Ready</span>
+                </>
+              ) : pyodideError ? (
+                <>
+                  <AlertCircle className="h-4 w-4 text-red-600" />
+                  <span className="text-red-600 font-medium">Failed</span>
+                </>
+              ) : (
+                <>
+                  <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />
+                  <span className="text-gray-500">Waiting...</span>
+                </>
               )}
             </div>
 

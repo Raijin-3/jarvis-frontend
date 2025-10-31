@@ -43,6 +43,14 @@ export function useSQLite(initialData?: ArrayBuffer | Uint8Array): UseSQLiteRetu
           return;
         }
 
+        // Set a timeout for initialization (30 seconds)
+        const timeoutId = setTimeout(() => {
+          setError({
+            message: 'SQLite initialization timed out. The CDN might be unavailable or your connection is slow.'
+          });
+          setIsLoading(false);
+        }, 30000);
+
         // Load SQL.js from CDN to avoid bundling issues
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js';
@@ -50,7 +58,7 @@ export function useSQLite(initialData?: ArrayBuffer | Uint8Array): UseSQLiteRetu
         
         await new Promise<void>((resolve, reject) => {
           script.onload = () => resolve();
-          script.onerror = () => reject(new Error('Failed to load SQL.js'));
+          script.onerror = () => reject(new Error('Failed to load SQL.js from CDN'));
           document.head.appendChild(script);
         });
 
@@ -71,12 +79,13 @@ export function useSQLite(initialData?: ArrayBuffer | Uint8Array): UseSQLiteRetu
           database = new sqlModule.Database();
         }
 
+        clearTimeout(timeoutId);
         setDb(database);
         setIsLoading(false);
       } catch (err: any) {
         console.error('Failed to initialize SQLite:', err);
         setError({
-          message: err.message || 'Failed to initialize SQLite database',
+          message: err.message || 'Failed to initialize SQLite database. Please check your internet connection and try again.',
           errno: err.errno
         });
         setIsLoading(false);

@@ -21,7 +21,9 @@ import {
   FileSpreadsheet,
   Download,
   Upload,
-  Trash2
+  Trash2,
+  Loader,
+  AlertCircle
 } from "lucide-react";
 
 type TestCase = {
@@ -101,6 +103,7 @@ export function SqlPracticeInterface({
   const [stdout, setStdout] = useState<string>('');
   const [showExpected, setShowExpected] = useState(false);
   const [currentDatabase, setCurrentDatabase] = useState<Uint8Array | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
 
@@ -116,6 +119,11 @@ export function SqlPracticeInterface({
     importDatabase,
     resetDatabase
   } = useSQLite(currentDatabase || undefined);
+
+  // Retry initialization
+  const handleRetry = useCallback(() => {
+    setRetryCount(prev => prev + 1);
+  }, []);
 
   // Load datasets for the question
   useEffect(() => {
@@ -341,27 +349,53 @@ export function SqlPracticeInterface({
     }
   };
 
-  // Database error handling
-  if (dbError) {
-    return (
-      <div className="h-full flex items-center justify-center bg-gray-50 rounded-lg">
-        <div className="text-center">
-          <XCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Database Initialization Failed</h3>
-          <p className="text-gray-600 mb-4">{dbError.message}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            Reload Page
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Database error handling - show banner but allow retry
+  // Removed full-page error to show banner instead in the component
 
   return (
     <div className="h-full flex flex-col bg-gray-50 rounded-lg overflow-hidden">
+      {/* Loading/Error Banner */}
+      {(dbLoading || dbError) && (
+        <div className={`px-4 py-3 border-b ${dbError ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
+          <div className="flex items-center gap-3">
+            {dbLoading ? (
+              <>
+                <Loader className="h-4 w-4 text-blue-600 animate-spin" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-blue-900">Initializing SQLite Database...</p>
+                  <p className="text-xs text-blue-700 mt-1">Loading SQL.js WebAssembly runtime and preparing database environment</p>
+                </div>
+              </>
+            ) : dbError ? (
+              <>
+                <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-red-900">Database Initialization Failed</p>
+                  <p className="text-xs text-red-700 mt-1">{dbError.message}</p>
+                  <p className="text-xs text-red-600 mt-2">
+                    This might be due to network issues or CDN availability. Please try again.
+                  </p>
+                </div>
+                <div className="flex gap-2 flex-shrink-0">
+                  <button
+                    onClick={handleRetry}
+                    className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                  >
+                    Reload
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3">
         <div className="flex items-center justify-between">
@@ -373,10 +407,27 @@ export function SqlPracticeInterface({
           <div className="flex items-center gap-3">
             {/* Database Status */}
             <div className="flex items-center gap-2 text-sm">
-              <Database className="h-4 w-4 text-green-600" />
-              <span className={dbLoading ? 'text-yellow-600' : db ? 'text-green-600' : 'text-red-600'}>
-                {dbLoading ? 'Initializing...' : db ? 'Connected' : 'Disconnected'}
-              </span>
+              {dbLoading ? (
+                <>
+                  <Loader className="h-4 w-4 text-blue-600 animate-spin" />
+                  <span className="text-blue-600 font-medium">Initializing...</span>
+                </>
+              ) : db ? (
+                <>
+                  <Database className="h-4 w-4 text-green-600" />
+                  <span className="text-green-600 font-medium">Connected</span>
+                </>
+              ) : dbError ? (
+                <>
+                  <AlertCircle className="h-4 w-4 text-red-600" />
+                  <span className="text-red-600 font-medium">Failed</span>
+                </>
+              ) : (
+                <>
+                  <Database className="h-4 w-4 text-gray-400" />
+                  <span className="text-gray-500">Waiting...</span>
+                </>
+              )}
             </div>
 
             {/* Reset Database */}

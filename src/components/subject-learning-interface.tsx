@@ -176,6 +176,9 @@ type GeneratedExerciseResponse = {
     }>;
     expected_cols_list: string[][];
     data_creation_sql?: string;
+    data_creation_python?: string;
+    create_python?: string;
+    creation_python?: string;
     answers_sql_map: Record<number, string>;
     verification: Array<{
       question: number;
@@ -265,7 +268,7 @@ type AdaptiveQuizNextQuestionPayload = {
   };
 };
 
-const getQuizAction = (quizId: string) => apiGet<Quiz>(`/v1/quizzes/${quizId}`);
+const getQuizAction = (quizId: string) => apiGet<Quiz>(`v1/quizzes/${quizId}`);
 
 const generateSectionExercisesAction = (payload: GenerateSectionExercisesPayload) =>
   apiPost<GeneratedExerciseResponse>(`/v1/sections/${payload.sectionId}/generate-exercises`, {
@@ -781,6 +784,7 @@ type PythonDatasetDetail = {
   datasetCsv?: string;
   loadError?: string;
   tableNames: string[];
+  creation_python?: string;
 };
 
 type PythonDatasetLoadState = {
@@ -1220,6 +1224,11 @@ const buildPythonDatasetDetail = (
 
   const displayName = primaryTableName || pythonVariable || originalName;
 
+  // Generate basic Python setup code for loading the dataset
+  const creation_python = `import pandas as pd
+
+# Dataset is loaded as: ${pythonVariable}`;
+
   return {
     id: dataset.id,
     name: primaryTableName || originalName,
@@ -1233,6 +1242,7 @@ const buildPythonDatasetDetail = (
     rowCount: objectRows.length,
     datasetCsv: csvRaw,
     tableNames,
+    creation_python,
     loadError:
       objectRows.length === 0
         ? csvRaw
@@ -1811,7 +1821,7 @@ export function SubjectLearningInterface({
     [subjectModules]
   );
 
-  // console.log("All Sections:", allSections);
+  console.log("All Sections:", allSections);
 
   const getModuleIdentifier = useCallback((module: Module | undefined) => {
     if (!module) return undefined;
@@ -2141,9 +2151,10 @@ export function SubjectLearningInterface({
     }
   }, [handleVideoFocus, handleVideoBlur, setVideoRef]);
   const [showQuestionPopup, setShowQuestionPopup] = useState(false);
-
   // SQL execution state
   const [sqlCode, setSqlCode] = useState<string>('');
+  const [pythonCode , setPythonCode] = useState<string>('');
+  const [codeLanguage, setCodeLanguage] = useState<string>('sql');
   const [sqlResults, setSqlResults] = useState<any[]>([]);
   const [sqlError, setSqlError] = useState<string>('');
   const [isExecutingSql, setIsExecutingSql] = useState(false);
@@ -2173,6 +2184,16 @@ export function SubjectLearningInterface({
   const [pythonOutput, setPythonOutput] = useState<string>('');
   const [pythonError, setPythonError] = useState<string>('');
 
+  const canClearOutput = useMemo(
+    () =>
+      sqlResults.length > 0 ||
+      !!sqlError ||
+      !!pythonOutput ||
+      !!pythonError ||
+      !!duckDbSetupError,
+    [sqlResults, sqlError, pythonOutput, pythonError, duckDbSetupError],
+  );
+
   // Dataset state
   const [exerciseDatasets, setExerciseDatasets] = useState<{ [exerciseId: string]: any[] }>({});
   const [loadingExerciseDatasets, setLoadingExerciseDatasets] = useState<Record<string, boolean>>({});
@@ -2186,14 +2207,23 @@ export function SubjectLearningInterface({
   const [datasetPreviewError, setDatasetPreviewError] = useState<string | null>(null);
   const [downloadingDataset, setDownloadingDataset] = useState(false);
   const [pythonDatasetStatus, setPythonDatasetStatus] = useState<Record<string, PythonDatasetLoadState>>({});
-  const datasetPreviewCacheRef = useRef<Record<string, Record<string, DatasetPreview>>>({});
-  const activeDatasetPreviewRequestRef = useRef<string | null>(null);
-  const datasetAvailabilitySignatureRef = useRef<string | null>(null);
+const datasetPreviewCacheRef = useRef<Record<string, Record<string, DatasetPreview>>>({});
+const activeDatasetPreviewRequestRef = useRef<string | null>(null);
+const datasetAvailabilitySignatureRef = useRef<string | null>(null);
+const sqlStarterAppliedRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     datasetPreviewCacheRef.current = {};
     activeDatasetPreviewRequestRef.current = null;
   }, [courseId, subjectId]);
+
+  const handleClearOutput = useCallback(() => {
+    setSqlResults([]);
+    setSqlError('');
+    setPythonOutput('');
+    setPythonError('');
+    setDuckDbSetupError(null);
+  }, []);
 
   const downloadDatasetPreview = useCallback(
     async ({
@@ -2692,6 +2722,16 @@ export function SubjectLearningInterface({
         const normalizedCreationSql = normalizeCreationSql(creationSqlSource, {
           datasetType: normalizedQuestionType,
         });
+        const creationPythonSource = coalesceString(
+          context.data_creation_python,
+          (context as any)?.create_python,
+          (context as any)?.creation_python,
+        );
+        const normalizedCreationPython = normalizeCreationSql(creationPythonSource, {
+          datasetType: "python",
+          preserveFormatting: true,
+        });
+
         const normalizedDatasetCsv =
           typeof context.dataset_csv_raw === "string" && context.dataset_csv_raw.trim().length > 0
             ? extractCsvFromSource(context.dataset_csv_raw) ?? context.dataset_csv_raw
@@ -2706,16 +2746,24 @@ export function SubjectLearningInterface({
             : datasetRows.length > 0
             ? Object.keys(datasetRows[0])
             : context.expected_cols_list?.[0] || [];
-        const datasetPayload =
+        const datasetSqlPayload =
           normalizedQuestionType === "google_sheets"
             ? normalizedDatasetCsv ?? normalizedCreationSql ?? ""
             : normalizedCreationSql ?? "";
+        const datasetPythonPayload =
+          normalizedCreationPython ??
+          (normalizedQuestionType === "python" || normalizedQuestionType === "statistics"
+            ? normalizedCreationSql
+            : undefined);
         const normalizedContext = {
           ...context,
-          data_creation_sql: datasetPayload,
+          data_creation_sql: datasetSqlPayload,
           create_sql: normalizedCreationSql ?? undefined,
           dataset_csv_raw: normalizedDatasetCsv,
           dataset_columns: datasetColumns,
+          data_creation_python: normalizedCreationPython ?? context.data_creation_python,
+          create_python: normalizedCreationPython ?? (context as any)?.create_python ?? (context as any)?.creation_python,
+          creation_python: normalizedCreationPython ?? (context as any)?.creation_python ?? (context as any)?.create_python,
         };
 
         const derivedQuestions =
@@ -2732,7 +2780,7 @@ export function SubjectLearningInterface({
                 solution: '',
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
-                dataset: datasetPayload,
+                dataset: datasetSqlPayload,
               }));
 
         const updatedExercise = {
@@ -2743,7 +2791,7 @@ export function SubjectLearningInterface({
         const normalizedExerciseEntry = {
           ...updatedExercise,
           section_exercise_questions: derivedQuestions,
-          dataset: datasetPayload,
+          dataset: datasetSqlPayload,
           context: normalizedContext,
         };
 
@@ -2770,12 +2818,15 @@ export function SubjectLearningInterface({
               name: updatedExercise.title || 'Generated Dataset',
               description: context.dataset_description,
               columns: datasetColumns,
-              creation_sql: datasetPayload,
-              create_sql: datasetPayload,
+              creation_sql: datasetSqlPayload,
+              create_sql: datasetSqlPayload,
               dataset_csv_raw: normalizedDatasetCsv,
               data: datasetRows,
               data_preview: datasetRows.slice(0, 20),
               data_dictionary: context.data_dictionary,
+              creation_python: datasetPythonPayload,
+              create_python: datasetPythonPayload,
+              data_creation_python: datasetPythonPayload,
             },
           ],
         }));
@@ -2795,7 +2846,8 @@ export function SubjectLearningInterface({
               exerciseId: updatedExercise.id ? String(updatedExercise.id) : null,
               exerciseTitle: updatedExercise.title,
               exerciseDescription: updatedExercise.description,
-              exerciseDataset: datasetPayload,
+              exerciseDataset: datasetSqlPayload,
+              exercisePythonDataset: datasetPythonPayload,
             },
             0,
           );
@@ -3160,6 +3212,7 @@ export function SubjectLearningInterface({
     setSelectedQuestionForPopup(null);
     setShowQuestionPopup(false);
     setSqlCode('');
+    setPythonCode('');
     setSqlResults([]);
     setSqlError('');
     setSelectedResource((prev) => {
@@ -3857,10 +3910,18 @@ export function SubjectLearningInterface({
         exerciseContext?.exercise_type,
         exerciseContext?.subject_type,
       );
-      const exerciseDatasetSql = normalizeCreationSql(
-        (question as any)?.exerciseDataset ?? exerciseContext.dataset,
-        { datasetType: exerciseDatasetType },
-      );
+      const rawExerciseDataset = (question as any)?.exerciseDataset ?? exerciseContext.dataset;
+      const exerciseDatasetSql = normalizeCreationSql(rawExerciseDataset, {
+        datasetType: exerciseDatasetType,
+      });
+      const rawExercisePythonDataset =
+        (question as any)?.exercisePythonDataset ??
+        (exerciseContext as any)?.dataset_python ??
+        (exerciseContext as any)?.data_creation_python;
+      const exercisePythonDataset = normalizeCreationSql(rawExercisePythonDataset, {
+        datasetType: "python",
+        preserveFormatting: true,
+      });
 
       setSelectedQuestionForPopup({
         ...question,
@@ -3868,6 +3929,7 @@ export function SubjectLearningInterface({
         exerciseTitle: exerciseContext.title,
         exerciseDescription: exerciseContext.description,
         exerciseDataset: exerciseDatasetSql,
+        exercisePythonDataset: exercisePythonDataset ?? undefined,
         text:
           typeof (question as any)?.text === "string" && (question as any).text.trim()
             ? (question as any).text
@@ -3885,6 +3947,7 @@ export function SubjectLearningInterface({
       setSqlCode('');
       setSqlResults([]);
       setSqlError('');
+      setPythonCode('');
 
       const cachedDataset = questionId ? questionDatasetCache[questionId] : undefined;
       const inlineDataset = normalizeQuestionDataset((question as { dataset?: unknown }).dataset, {
@@ -4124,7 +4187,7 @@ export function SubjectLearningInterface({
       // });
 
       if (questionList.length > 0) {
-        const firstQuestion = questionList[0];
+          const firstQuestion = questionList[0];
         // console.log('[HANDLE SELECT EXERCISE DEBUG] Setting first question as selected');
         const exerciseDatasetType = resolveDatasetLanguage(
           exercise?.subject_type,
@@ -4718,6 +4781,8 @@ export function SubjectLearningInterface({
     return datasets;
   }, [isPythonLikeQuestion, questionDataset, selectedQuestionForPopup, exerciseDatasetList]);
 
+ 
+
   const duckDbDatasetVariants = useMemo<SqlDatasetVariant[]>(() => {
     if (!shouldUseDuckDb) {
       return [];
@@ -4779,7 +4844,15 @@ export function SubjectLearningInterface({
       });
     });
 
-    return dedupeByLabel(variants, (variant) => variant.displayName ?? "Dataset");
+    return dedupeByLabel(variants, (variant) =>
+      resolveDatasetLabel(
+        variant.displayName ??
+          variant.resolvedTableName ??
+          variant.table_name ??
+          variant.name,
+        "Dataset",
+      ),
+    );
   }, [duckDbDatasets, duckDbDatasetTables, shouldUseDuckDb]);
 
   const pythonDatasetDetails = useMemo(() => {
@@ -5316,6 +5389,67 @@ export function SubjectLearningInterface({
       ? activePythonVariant?.baseDatasetId ?? activeDatasetId
       : null;
 
+   // --- Python starter from datasets (practice_datasets + question + exercise) ---
+  const pythonStarterFromDatasets = useMemo(() => {
+    if (!(selectedQuestionType === "python" || selectedQuestionType === "statistics")) {
+      return undefined;
+    }
+
+    const resolvePythonCreationSource = (candidate: unknown): string | undefined => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+      const record = candidate as Record<string, unknown>;
+      const schemaInfoRaw = record["schema_info"];
+      const schemaInfo =
+        schemaInfoRaw && typeof schemaInfoRaw === "object" && !Array.isArray(schemaInfoRaw)
+          ? (schemaInfoRaw as Record<string, unknown>)
+          : undefined;
+
+      // Coalesce all the usual fields we already support elsewhere
+      return coalesceString(
+        typeof record["create_python"] === "string" ? (record["create_python"] as string) : undefined,
+        typeof record["creation_python"] === "string" ? (record["creation_python"] as string) : undefined,
+        schemaInfo && typeof schemaInfo["create_python"] === "string" ? (schemaInfo["create_python"] as string) : undefined,
+        schemaInfo && typeof schemaInfo["creation_python"] === "string" ? (schemaInfo["creation_python"] as string) : undefined,
+        schemaInfo && typeof schemaInfo["data_creation_python"] === "string" ? (schemaInfo["data_creation_python"] as string) : undefined,
+        typeof record["data_creation_python"] === "string" ? (record["data_creation_python"] as string) : undefined,
+      );
+    };
+
+    const normalize = (src?: string) =>
+      src ? normalizeCreationSql(src, { datasetType: "python", preserveFormatting: true }) : undefined;
+
+    // Prioritize the currently active/python base dataset, then all available python datasets
+    const candidates: any[] = [];
+    const activeDef = activePythonBaseDatasetId
+      ? availablePythonDatasets.find(d => d.id === activePythonBaseDatasetId)
+      : undefined;
+    if (activeDef) candidates.push(activeDef);
+    candidates.push(...availablePythonDatasets);
+
+    // Also consider any practice_datasets attached to the selected question/exercise
+    const practice = (selectedQuestionForPopup as any)?.practice_datasets;
+    if (Array.isArray(practice)) candidates.push(...practice);
+
+    for (const c of candidates) {
+      const s = normalize(resolvePythonCreationSource(c));
+      if (s) return s;
+    }
+
+    // Fallbacks: question-level dataset, inline dataset, raw question object
+    const fb = normalize(resolvePythonCreationSource(questionDataset)) ??
+              normalize(resolvePythonCreationSource((selectedQuestionForPopup as any)?.dataset)) ??
+              normalize(resolvePythonCreationSource(selectedQuestionForPopup));
+
+    return fb ?? undefined;
+  }, [
+    selectedQuestionType,
+    availablePythonDatasets,
+    activePythonBaseDatasetId,
+    selectedQuestionForPopup,
+    questionDataset,
+  ]);
+
+
   const activePythonDatasetDetail =
     isPythonLikeQuestion  && activePythonBaseDatasetId && activePythonBaseDatasetId || (selectedQuestionType === "statistics" && activePythonBaseDatasetId)
       ? pythonDatasetDetails[activePythonBaseDatasetId]
@@ -5409,14 +5543,136 @@ export function SubjectLearningInterface({
     [duckDbDatasets],
   );
 
+  // useEffect(() => {
+  //   if (!selectedQuestionForPopup) {
+  //     setSqlCode('');
+  //     setSqlResults([]);
+  //     setDuckDbTables([]);
+  //     setDuckDbSetupError(null);
+  //   }
+  // }, [selectedQuestionForPopup]);
+
   useEffect(() => {
     if (!selectedQuestionForPopup) {
       setSqlCode('');
+      setPythonCode('');
       setSqlResults([]);
       setDuckDbTables([]);
       setDuckDbSetupError(null);
+      return;
     }
-  }, [selectedQuestionForPopup]);
+
+    const questionType = (selectedQuestionForPopup.question_type || selectedQuestionForPopup.type || "sql").toLowerCase();
+    setCodeLanguage(questionType);
+
+  }, [selectedQuestionForPopup?.id, selectedQuestionForPopup?.question_type, selectedQuestionForPopup?.type]);
+
+  useEffect(() => {
+    if (!selectedQuestionForPopup) {
+      return;
+    }
+
+    const questionKey = (() => {
+      if (!selectedQuestionForPopup) {
+        return undefined;
+      }
+      const rawId = (selectedQuestionForPopup as { id?: unknown }).id;
+      if (typeof rawId === "string" && rawId) {
+        return rawId;
+      }
+      if (typeof rawId === "number") {
+        return String(rawId);
+      }
+      const exerciseId = (selectedQuestionForPopup as { exerciseId?: unknown }).exerciseId;
+      const orderIndex = (selectedQuestionForPopup as { order_index?: unknown }).order_index;
+      if (exerciseId != null) {
+        const exerciseKey =
+          typeof exerciseId === "string" || typeof exerciseId === "number"
+            ? String(exerciseId)
+            : "exercise";
+        const orderKey =
+          typeof orderIndex === "number"
+            ? orderIndex
+            : typeof orderIndex === "string"
+            ? Number.parseInt(orderIndex, 10) || 0
+            : 0;
+        return `${exerciseKey}-${orderKey}`;
+      }
+      const textSource =
+        typeof (selectedQuestionForPopup as { question_text?: unknown }).question_text === "string"
+          ? ((selectedQuestionForPopup as { question_text?: string }).question_text ?? "")
+          : typeof (selectedQuestionForPopup as { text?: unknown }).text === "string"
+          ? ((selectedQuestionForPopup as { text?: string }).text ?? "")
+          : "";
+      return textSource ? `question-${textSource.slice(0, 32)}` : undefined;
+    })();
+
+    const questionType = (selectedQuestionForPopup.question_type || selectedQuestionForPopup.type || "sql").toLowerCase();
+
+    // Populate the editor with something useful so Python/SQL prompts never start empty.
+    const generateStarterCode = () => {
+      const languageConfig: Record<string, string> = {
+        sql: `-- Write your SQL query here\n-- ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\n-- Example solution:\n-- SELECT * FROM table_name;\n\n`,
+        python: `# Write your Python code here\n# ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\ndef solution():\n    # Your code here\n    pass\n\nsolution()\n`,
+        google_sheets: `=${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\n`,
+        statistics: `# Statistical analysis solution\n# ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\nimport pandas as pd\nimport numpy as np\n\n# Your analysis here\n`,
+        reasoning: `# Logical reasoning solution\n# ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\n`,
+        math: `# Mathematical solution\n# ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\n`,
+        geometry: `# Geometric solution\n# ${selectedQuestionForPopup.text || selectedQuestionForPopup.question_text}\n\n`,
+      };
+
+      return languageConfig[questionType] || languageConfig.sql;
+    };
+
+    const fallbackStarter = generateStarterCode();
+
+    if (questionType === "python" || questionType === "statistics") {
+      const inlineStarter =
+        typeof (selectedQuestionForPopup as any)?.exercisePythonDataset === "string"
+          ? ((selectedQuestionForPopup as any)?.exercisePythonDataset as string)
+          : undefined;
+      const hasInlineStarter = typeof inlineStarter === "string" && inlineStarter.trim().length > 0;
+      const hasDatasetStarter =
+        typeof pythonStarterFromDatasets === "string" && pythonStarterFromDatasets.trim().length > 0;
+      const datasetStarter = hasInlineStarter
+        ? inlineStarter
+        : hasDatasetStarter
+        ? pythonStarterFromDatasets
+        : undefined;
+      const starter = datasetStarter ?? fallbackStarter;
+
+      const trimmedCurrent = pythonCode.trim();
+      const trimmedFallback = fallbackStarter.trim();
+
+      if (!trimmedCurrent || trimmedCurrent === trimmedFallback) {
+        setPythonCode(starter);
+      }
+    } else if (questionType === "sql") {
+      const hasAppliedStarter = questionKey ? sqlStarterAppliedRef.current[questionKey] : false;
+      if (!sqlCode.trim() && !hasAppliedStarter) {
+        setSqlCode(fallbackStarter);
+        if (questionKey) {
+          sqlStarterAppliedRef.current[questionKey] = true;
+        }
+      }
+    } else if (questionType === "google_sheets") {
+      if (!sqlCode.trim()) {
+        setSqlCode(fallbackStarter);
+      }
+    } else {
+      if (!sqlCode.trim()) {
+        setSqlCode(fallbackStarter);
+      }
+    }
+  }, [
+    pythonCode,
+    pythonStarterFromDatasets,
+    selectedQuestionForPopup?.id,
+    selectedQuestionForPopup?.question_type,
+    selectedQuestionForPopup?.type,
+    sqlCode,
+  ]);
+
 
   useEffect(() => {
     if (!selectedQuestionForPopup || !shouldUseDuckDb) {
@@ -6814,7 +7070,7 @@ export function SubjectLearningInterface({
             >
               {/* sow the soinner while waiting for next question */}
               {submittingAdaptiveAnswer ? (
-                <div className="animate-spin inline-block h-5 w-5 border-2 border-current border-solid rounded-full"></div>
+                <div className="inline-block h-5 w-5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin"></div>
               ) : (
                 <span>Next</span>
               )}
@@ -6963,9 +7219,13 @@ export function SubjectLearningInterface({
         candidateDatasets.push(dataset);
       };
 
+      const activeBaseId = activeDatasetId
+        ? (duckDbDatasetVariants.find(v => v.id === activeDatasetId)?.baseDatasetId ?? activeDatasetId)
+        : null;
+
       const activeDefinition =
-        activePythonBaseDatasetId
-          ? availablePythonDatasets.find((dataset) => dataset.id === activePythonBaseDatasetId)
+        activeBaseId
+          ? availablePythonDatasets.find((dataset) => dataset.id === activeBaseId)
           : undefined;
 
       pushCandidate(activeDefinition);
@@ -7223,18 +7483,18 @@ export function SubjectLearningInterface({
             )}
           </div>
           <div className="flex-1 overflow-auto px-6 py-5">
-            {questionType === "sql" ? (
+            {questionType === "sql" || questionType === "python" || questionType === "statistics" || questionType === "google_sheets"  ? (
               <div className="flex min-h-full flex-col gap-4">
                 <div className="flex items-center justify-between gap-3">
                   <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                     Dataset Preview
                   </h4>
-                  {duckDbDatasetsForQuestion.length > 0 && (
+                  {duckDbDatasetsForQuestion.length > 1 && (
                     <div className="flex flex-wrap justify-end gap-2">
                       {duckDbDatasetsForQuestion.map((dataset) => {
                         const isActive = dataset.id === activeDatasetId;
-                        const label = dataset.table_name || "Dataset";
-                        
+                        const label = dataset.resolvedTableName || "Dataset";
+
                         return (
                           <button
                             key={dataset.id}
@@ -7256,7 +7516,10 @@ export function SubjectLearningInterface({
                   <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
                     <div className="flex flex-col">
                       <span className="text-sm font-semibold text-slate-800">
-                        {activeDuckDbDataset?.table_name || "Dataset"}
+                        {activeDuckDbDataset?.resolvedTableName ||
+                          activeDuckDbDataset?.name ||
+                          activeDuckDbDataset?.table_name ||
+                          "Dataset"}
                       </span>
                       <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
                         {(activeDuckDbDataset?.resolvedTableName ?? activeDuckDbDataset?.table_name) && (
@@ -7280,7 +7543,7 @@ export function SubjectLearningInterface({
                           onClick={() =>
                             downloadDatasetPreview({
                               fileName:
-                                activeDuckDbDataset?.displayName ||
+                                activeDuckDbDataset?.resolvedTableName ||
                                 activeDuckDbDataset?.name ||
                                 activeDuckDbDataset?.table_name ||
                                 "dataset",
@@ -7387,7 +7650,7 @@ export function SubjectLearningInterface({
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                       Dataset Preview
                     </h4>
-                    {pythonDatasetOptions.length > 0 && (
+                    {pythonDatasetOptions.length > 1 && (
                       <div className="flex flex-wrap justify-end gap-2">
                         {pythonDatasetOptions.map((option) => {
                           const isActive = option.id === activeDatasetId;
@@ -7818,7 +8081,7 @@ export function SubjectLearningInterface({
                       Craft your solution and run it against the dataset. Output appears below.
                     </p>
                   </div>
-                  {isExecutingSql && (
+                  {(isExecutingSql || isExecutingPython) && (
                     <div className="flex items-center gap-2 text-xs text-indigo-600">
                       <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-300 border-t-transparent" />
                       <span>Running...</span>
@@ -7826,13 +8089,27 @@ export function SubjectLearningInterface({
                   )}
                 </div>
                 <div className="mt-4 flex min-h-[280px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
+                  {/* Debug: Show current state */}
+                  {/* <div className="text-xs text-slate-400 px-5 py-2 border-b border-slate-700">
+                    Language: {codeLanguage} | SQL: {sqlCode.length}c | Python: {pythonCode.length}c
+                  </div> */}
+                  
                   <textarea
-                    value={selectedQuestionType=== 'python' ? config.starterCode: sqlCode}
-                    onChange={(e) => setSqlCode(e.target.value)}
-                    className={`flex-1 resize-none bg-transparent p-5 font-mono text-sm leading-6 tracking-tight text-slate-100 outline-none ${
-                      questionType === "sql" ? "placeholder:text-slate-500" : "placeholder:text-slate-400"
-                    }`}
-                    placeholder={config.starterCode}
+                    key={`${selectedQuestionForPopup?.id}-${codeLanguage}`}
+                    value={
+                      codeLanguage === 'python'
+                        ? pythonCode
+                        : sqlCode
+                    }
+                    onChange={(e) => {
+                      if (codeLanguage === 'python' || codeLanguage === 'statistics') {
+                        setPythonCode(e.target.value);
+                      } else {
+                        setSqlCode(e.target.value);
+                      }
+                    }}
+                    className="flex-1 resize-none bg-transparent p-5 font-mono text-sm leading-6 tracking-tight text-slate-100 outline-none placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                    placeholder="Start coding..."
                     spellCheck={false}
                   />
                   <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/70 bg-slate-900/60 px-5 py-3">
@@ -7850,21 +8127,25 @@ export function SubjectLearningInterface({
                           {duckDbTables.length > 4 ? ` +${duckDbTables.length - 4}` : ""}
                         </span>
                       )}
-                      {sqlError && (
+                      {/* {(sqlError || pythonError) && (
                         <span className="rounded-full bg-rose-900/60 px-3 py-1 text-rose-200">
-                          {sqlError}
+                          {sqlError || pythonError}
                         </span>
-                      )}
+                      )} */}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button
-                        onClick={() => handleExecuteCode(sqlCode)}
+                        onClick={() => handleExecuteCode(
+                          codeLanguage === 'python' || codeLanguage === 'statistics'
+                            ? pythonCode
+                            : sqlCode
+                        )}
                         disabled={
                           isExecutingSql ||
                           isExecutingPython ||
-                          !sqlCode.trim() ||
-                          (questionType === "sql" && (!isDuckDbReady || isPreparingDuckDb)) ||
-                          ((questionType === "python" || questionType === "statistics") && !isPyodideReady)
+                          (codeLanguage === 'python' || codeLanguage === 'statistics'
+                            ? !pythonCode.trim() || !isPyodideReady
+                            : !sqlCode.trim() || (!isDuckDbReady || isPreparingDuckDb))
                         }
                         className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-700"
                       >
@@ -7893,20 +8174,29 @@ export function SubjectLearningInterface({
                 <div className="flex h-full flex-col rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
                   <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
                     <h4 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Output</h4>
-                    {(isDuckDbLoading || isPreparingDuckDb) && (
-                      <div className="flex items-center gap-2 text-xs text-indigo-300">
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
-                        <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Loading datasets..."}</span>
-                      </div>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {(isDuckDbLoading || isPreparingDuckDb) && (
+                        <div className="flex items-center gap-2 text-xs text-indigo-300">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
+                          <span>{isDuckDbLoading ? "Initializing DuckDB..." : "Loading datasets..."}</span>
+                        </div>
+                      )}
 
-                    {isPyodideLoading && (
-                      <div className="flex items-center gap-2 text-xs text-indigo-300">
-                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
-                        <span>Initializing Python runtime...</span>
-                      </div>
-                    )}
+                      {isPyodideLoading && (
+                        <div className="flex items-center gap-2 text-xs text-indigo-300">
+                          <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
+                          <span>Initializing Python runtime...</span>
+                        </div>
+                      )}
 
+                      <button
+                        onClick={handleClearOutput}
+                        disabled={!canClearOutput || isExecutingSql || isExecutingPython}
+                        className="rounded-full border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-slate-800/60 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
                   <div className="flex-1 overflow-auto px-5 py-4 font-mono text-sm text-emerald-200">
                     {duckDbError && (
@@ -7914,11 +8204,11 @@ export function SubjectLearningInterface({
                         {duckDbError}
                       </div>
                     )}
-                    {duckDbSetupError && (
+                    {/* {duckDbSetupError && (
                       <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-900/20 px-3 py-2 text-rose-200">
                         {duckDbSetupError}
                       </div>
-                    )}
+                    )} */}
                     {sqlResults.length === 0 && !sqlError && !isExecutingSql && !pythonOutput && !pythonError && !isExecutingPython && (
                       <div className="text-sm text-slate-400">
                         {sqlCode.trim()
@@ -8323,8 +8613,8 @@ export function SubjectLearningInterface({
 
                       : null;
 
-                    const shouldHideGenerationButtons = moduleIndex === 0 && moduleSectionIndex === 0;
-                    // const shouldHideGenerationButtons = exercises.length > 0;
+                    // const shouldHideGenerationButtons = moduleIndex === 0 && moduleSectionIndex === 0;
+                    const shouldHideGenerationButtons = exercises.length > 0;
                     const adaptiveQuizStatus = activeSectionQuizzes[section.id];
                     const hasActiveAdaptiveQuiz = Boolean(adaptiveQuizStatus?.hasActiveQuiz);
                     const adaptiveButtonLabel = hasActiveAdaptiveQuiz ? "Resume Adaptive Quiz" : "Start Adaptive Quiz";
@@ -8559,6 +8849,9 @@ export function SubjectLearningInterface({
                                 )}
                               </button>
 
+                             </>
+                          )}
+
                               {/* Adaptive Quiz Button */}
                               <button
                                 onClick={() => handleStartAdaptiveQuiz(section)}
@@ -8577,8 +8870,7 @@ export function SubjectLearningInterface({
                                   </>
                                 )}
                               </button>
-                            </>
-                          )}
+                           
 
                         </div>
 

@@ -128,7 +128,7 @@ export function PracticeCodingInterface({
   useEffect(() => {
     const loadLanguages = async () => {
       try {
-        const response: ProgrammingLanguage[] = await apiPost('/v1/practice-coding/languages', {});
+        const response: ProgrammingLanguage[] = await apiPost('/api/v1/practice-coding/languages', {});
         setLanguages(response || []);
       } catch (error) {
         console.error('Failed to load languages:', error);
@@ -146,7 +146,7 @@ export function PracticeCodingInterface({
   useEffect(() => {
     const loadTestCases = async () => {
       try {
-        const response: TestCase[] = await apiPost(`/v1/practice-coding/test-cases/${questionId}`, {});
+        const response: TestCase[] = await apiPost(`/api/v1/practice-coding/test-cases/${questionId}`, {});
         setTestCases(response || []);
       } catch (error) {
         console.error('Failed to load test cases:', error);
@@ -167,7 +167,7 @@ export function PracticeCodingInterface({
   useEffect(() => {
     const loadDatasets = async () => {
       try {
-        const response: { datasets: Dataset[] } = await apiPost(`/v1/practice-coding/datasets/${questionId}`, {});
+        const response: { datasets: Dataset[] } = await apiPost(`/api/v1/practice-coding/datasets/${questionId}`, {});
         setDatasets(response.datasets || []);
       } catch (error) {
         console.error('Failed to load datasets:', error);
@@ -184,7 +184,7 @@ export function PracticeCodingInterface({
   useEffect(() => {
     const loadTemplates = async () => {
       try {
-        const response: Record<string, string> = await apiPost(`/v1/practice-coding/templates/${subjectType}`, {});
+        const response: Record<string, string> = await apiPost(`/api/v1/practice-coding/templates/${subjectType}`, {});
         setTemplates(response || {});
       } catch (error) {
         console.error('Failed to load templates:', error);
@@ -228,7 +228,7 @@ export function PracticeCodingInterface({
         run_type: 'sample'
       };
 
-      const result: ExecutionResult = await apiPost('/v1/practice-coding/execute', payload);
+      const result: ExecutionResult = await apiPost('/api/v1/practice-coding/execute', payload);
       setExecutionResult(result);
       setStdout(result.overall_result.stdout);
 
@@ -262,7 +262,7 @@ export function PracticeCodingInterface({
         run_type: 'submit'
       };
 
-      const result: ExecutionResult = await apiPost('/v1/practice-coding/submit', payload);
+      const result: ExecutionResult = await apiPost('/api/v1/practice-coding/submit', payload);
 
       setExecutionResult(result);
       setStdout(result.overall_result.stdout);

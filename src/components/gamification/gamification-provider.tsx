@@ -175,7 +175,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
 
     try {
       // Fetch dashboard data (combines multiple endpoints)
-      const dashboardData = await apiCall(`/v1/gamification/dashboard/${userId}`);
+      const dashboardData = await apiCall(`/api/v1/gamification/dashboard/${userId}`);
       
       setStats(dashboardData.stats);
       setAchievements(dashboardData.recent_achievements || []);
@@ -201,7 +201,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     if (!userId) return;
 
     try {
-      await apiCall(`/v1/gamification/activity/${userId}`, {
+      await apiCall(`/api/v1/gamification/activity/${userId}`, {
         method: 'POST',
         body: JSON.stringify({
           activityType,
@@ -222,7 +222,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     if (!userId) return;
 
     try {
-      await apiCall(`/v1/gamification/challenges/${userId}/${challengeId}`, {
+      await apiCall(`/api/v1/gamification/challenges/${userId}/${challengeId}`, {
         method: 'POST',
         body: JSON.stringify({
           progressIncrement,
@@ -230,7 +230,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
       });
       
       // Refresh challenges data
-      const updatedChallenges = await apiCall(`/v1/gamification/challenges/${userId}`);
+      const updatedChallenges = await apiCall(`/api/v1/gamification/challenges/${userId}`);
       setDailyChallenges(updatedChallenges);
     } catch (error) {
       console.error('Failed to update challenge progress:', error);
@@ -241,7 +241,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     if (!userId) return;
 
     try {
-      await apiCall(`/v1/gamification/notifications/${userId}/read`, {
+      await apiCall(`/api/v1/gamification/notifications/${userId}/read`, {
         method: 'PATCH',
         body: JSON.stringify({
           notificationIds,
@@ -270,7 +270,7 @@ export function GamificationProvider({ children, userId }: GamificationProviderP
     if (!userId) return;
 
     try {
-      await apiCall(`/v1/gamification/points/${userId}`, {
+      await apiCall(`/api/v1/gamification/points/${userId}`, {
         method: 'POST',
         body: JSON.stringify({
           points,
