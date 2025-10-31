@@ -87,7 +87,7 @@ export function LoginForm() {
         if (token) {
           const basePath = process.env.NODE_ENV === 'production' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
           const normalizedBasePath = basePath.replace(/\/$/, '')
-          const profileUrl = `${normalizedBasePath}/api/v1/profile`
+          const profileUrl = `${normalizedBasePath}/v1/profile`
           // If Admin selected, attempt to set role before fetching
           if (roleTab === 'admin') {
             try {

@@ -8613,8 +8613,8 @@ const sqlStarterAppliedRef = useRef<Record<string, boolean>>({});
 
                       : null;
 
-                    // const shouldHideGenerationButtons = moduleIndex === 0 && moduleSectionIndex === 0;
-                    const shouldHideGenerationButtons = exercises.length > 0;
+                    const shouldHideGenerationButtons =
+                      exercises.length > 0 || (moduleIndex === 0 && moduleSectionIndex === 0);
                     const adaptiveQuizStatus = activeSectionQuizzes[section.id];
                     const hasActiveAdaptiveQuiz = Boolean(adaptiveQuizStatus?.hasActiveQuiz);
                     const adaptiveButtonLabel = hasActiveAdaptiveQuiz ? "Resume Adaptive Quiz" : "Start Adaptive Quiz";

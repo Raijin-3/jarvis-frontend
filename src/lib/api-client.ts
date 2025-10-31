@@ -9,6 +9,21 @@ const shouldProxyBackendCalls = isProduction && devBaseUrl.startsWith("http://")
 
 const supabase = supabaseBrowser();
 
+let cachedToken: string | null = null;
+let cachedExpiry: number | null = null;
+let authListenerRegistered = false;
+
+function ensureAuthListener() {
+  if (authListenerRegistered) return;
+  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    cachedToken = session?.access_token ?? null;
+    cachedExpiry = session?.expires_at ?? null;
+  });
+  // Supabase returns { data: { subscription } }, no need to expose teardown here.
+  void listener;
+  authListenerRegistered = true;
+}
+
 function buildRequestUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) {
     return path;
@@ -45,15 +60,36 @@ function buildRequestUrl(path: string): string {
 }
 
 async function getAuthToken() {
+  ensureAuthListener();
+
+  if (cachedToken && (!cachedExpiry || cachedExpiry * 1000 - Date.now() > 5_000)) {
+    return cachedToken;
+  }
+
   const { data, error } = await supabase.auth.getSession();
   if (error) {
     throw new Error(`Supabase auth error: ${error.message}`);
   }
-  const token = data.session?.access_token;
-  if (!token) {
+  const sessionToken = data.session?.access_token ?? null;
+  const sessionExpiry = data.session?.expires_at ?? null;
+  if (sessionToken) {
+    cachedToken = sessionToken;
+    cachedExpiry = sessionExpiry;
+    return sessionToken;
+  }
+
+  const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+  if (refreshError) {
     throw new Error("No auth token");
   }
-  return token;
+  const refreshedToken = refreshed.session?.access_token ?? null;
+  const refreshedExpiry = refreshed.session?.expires_at ?? null;
+  if (!refreshedToken) {
+    throw new Error("No auth token");
+  }
+  cachedToken = refreshedToken;
+  cachedExpiry = refreshedExpiry;
+  return refreshedToken;
 }
 
 async function parseResponse<T>(res: Response): Promise<T> {

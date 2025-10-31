@@ -11,7 +11,7 @@ export default async function UserManagementPage() {
   if (!user) redirect("/login")
 
   // Get profile and ensure admin role
-  const profile = await apiGet<any>("/api/v1/profile").catch(() => null)
+  const profile = await apiGet<any>("/v1/profile").catch(() => null)
   if ((profile?.role ?? "").toLowerCase() !== "admin") redirect("/dashboard")
 
   return <UserManagementClient />
